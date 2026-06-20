@@ -1,0 +1,220 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>국내주식 종목 발굴 랩</title>
+<style>
+:root {
+  --bg:#f3f5f8;
+  --panel:#ffffff;
+  --ink:#111827;
+  --muted:#64748b;
+  --line:#d9e0ea;
+  --red:#dc2626;
+  --blue:#2563eb;
+  --green:#0f766e;
+  --amber:#b45309;
+}
+* { box-sizing:border-box; }
+body { margin:0; background:var(--bg); color:var(--ink); font-family:-apple-system,BlinkMacSystemFont,"Apple SD Gothic Neo","Noto Sans KR",sans-serif; }
+header { position:sticky; top:0; z-index:2; background:#0f172a; color:white; padding:16px; box-shadow:0 6px 24px rgba(15,23,42,.22); }
+h1 { margin:0; font-size:20px; letter-spacing:0; }
+main { max-width:760px; margin:0 auto; padding:14px; }
+button { border:0; border-radius:8px; background:var(--blue); color:white; font-weight:800; padding:10px 12px; }
+.actions { display:flex; gap:8px; margin-top:12px; flex-wrap:wrap; }
+.actions button:nth-child(2) { background:var(--green); }
+.stamp { margin-top:8px; color:#cbd5e1; font-size:12px; line-height:1.45; }
+.metrics { display:grid; grid-template-columns:repeat(3, minmax(0,1fr)); gap:9px; margin:12px 0; }
+.metric { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:11px; }
+.metric span { display:block; color:var(--muted); font-size:12px; }
+.metric b { display:block; margin-top:5px; font-size:20px; }
+.panel { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:12px; margin-bottom:12px; }
+.panel h2 { margin:0 0 9px; font-size:16px; }
+.signals { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:7px; }
+.signal { display:flex; justify-content:space-between; gap:8px; border:1px solid var(--line); border-radius:8px; padding:8px; font-size:12px; background:#f8fafc; }
+.pos { color:var(--red); font-weight:800; }
+.neg { color:var(--blue); font-weight:800; }
+.sector { border-top:1px solid var(--line); padding:9px 0; }
+.sector:first-of-type { border-top:0; }
+.sector b { display:block; font-size:14px; }
+.sector span { display:block; color:var(--muted); font-size:12px; margin-top:3px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.stock { background:var(--panel); border:1px solid var(--line); border-radius:8px; margin-bottom:10px; overflow:hidden; }
+.stock-head { display:flex; justify-content:space-between; gap:10px; padding:12px; cursor:pointer; }
+.stock h3 { margin:0; font-size:16px; }
+.sub { color:var(--muted); font-size:12px; margin-top:3px; line-height:1.4; }
+.score { min-width:64px; text-align:right; font-size:22px; font-weight:900; }
+.tag { display:inline-block; border-radius:999px; padding:3px 7px; margin:5px 3px 0 0; background:#e8f2ff; color:#0b5cad; font-size:11px; font-weight:800; }
+.flow { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:8px; padding:0 12px 12px; font-size:12px; }
+.flow div { background:#f8fafc; border:1px solid var(--line); border-radius:8px; padding:8px; }
+.flow span { display:block; color:var(--muted); }
+.flow b { display:block; margin-top:4px; font-size:13px; }
+.detail { display:none; border-top:1px solid var(--line); padding:12px; }
+.stock.open .detail { display:block; }
+.chart { width:100%; height:190px; background:#fbfdff; border:1px solid var(--line); border-radius:8px; }
+ul { margin:9px 0 0; padding-left:18px; color:#334155; font-size:13px; line-height:1.55; }
+.empty { color:var(--muted); text-align:center; padding:30px 10px; }
+@media (max-width:520px) {
+  .metrics { grid-template-columns:repeat(2,minmax(0,1fr)); }
+  .signals { grid-template-columns:1fr; }
+  .flow { grid-template-columns:1fr; }
+}
+</style>
+</head>
+<body>
+<header>
+  <h1>국내주식 종목 발굴 랩</h1>
+  <div class="actions">
+    <button id="refresh">결과 새로고침</button>
+    <button id="runAction">데이터 분석 실행</button>
+  </div>
+  <div class="stamp" id="stamp">데이터 불러오는 중</div>
+</header>
+<main>
+  <section class="metrics">
+    <div class="metric"><span>분석 종목</span><b id="m-count">-</b></div>
+    <div class="metric"><span>발굴 강함</span><b id="m-strong">-</b></div>
+    <div class="metric"><span>수급 집중</span><b id="m-flow">-</b></div>
+  </section>
+  <section class="panel">
+    <h2>미국/글로벌 영향</h2>
+    <div class="signals" id="signals"></div>
+  </section>
+  <section class="panel">
+    <h2>섹터별 유망 후보</h2>
+    <div id="sectors"></div>
+  </section>
+  <section id="stocks"></section>
+</main>
+<script>
+const fmt = new Intl.NumberFormat("ko-KR");
+let lastPayload = null;
+function money(v) {
+  const n = Number(v || 0);
+  if (Math.abs(n) >= 100000000) return `${fmt.format(Math.round(n / 100000000))}억`;
+  if (Math.abs(n) >= 10000) return `${fmt.format(Math.round(n / 10000))}만`;
+  return fmt.format(Math.round(n));
+}
+function cls(v) { return Number(v || 0) >= 0 ? "pos" : "neg"; }
+function pct(v) {
+  const n = Number(v || 0);
+  return `${n >= 0 ? "+" : ""}${n.toFixed(2)}%`;
+}
+function esc(text) {
+  return String(text || "").replace(/[&<>"']/g, s => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#039;" }[s]));
+}
+function movingAverage(values, period) {
+  return values.map((_, i) => {
+    if (i + 1 < period) return null;
+    const slice = values.slice(i + 1 - period, i + 1);
+    return slice.reduce((a, b) => a + b, 0) / period;
+  });
+}
+function chart(points) {
+  const data = (points || []).filter(p => Number.isFinite(Number(p.close)));
+  const w = 640, h = 190;
+  if (data.length < 2) return `<svg class="chart" viewBox="0 0 ${w} ${h}"></svg>`;
+  const prices = data.map(p => Number(p.close));
+  const volumes = data.map(p => Number(p.volume || 0));
+  const ma5 = movingAverage(prices, 5);
+  const ma20 = movingAverage(prices, 20);
+  const all = prices.concat(ma5.filter(Boolean), ma20.filter(Boolean));
+  const min = Math.min(...all), max = Math.max(...all), span = max - min || 1;
+  const vmax = Math.max(...volumes, 1);
+  const left = 44, right = 12, top = 16, priceH = 104, volTop = 134, volH = 34;
+  const xFor = i => left + i * ((w - left - right) / Math.max(1, data.length - 1));
+  const yFor = v => top + priceH - ((v - min) / span) * priceH;
+  const lineFor = arr => arr.map((v, i) => v ? `${xFor(i).toFixed(1)},${yFor(v).toFixed(1)}` : "").filter(Boolean).join(" ");
+  const priceLine = lineFor(prices);
+  const color = prices[prices.length - 1] >= prices[0] ? "#dc2626" : "#2563eb";
+  const bars = volumes.map((v, i) => {
+    const bh = Math.max(1, (v / vmax) * volH);
+    return `<rect x="${(xFor(i)-3).toFixed(1)}" y="${(volTop + volH - bh).toFixed(1)}" width="6" height="${bh.toFixed(1)}" fill="#94a3b8" opacity=".6"/>`;
+  }).join("");
+  const grid = [0,.5,1].map(t => {
+    const y = top + priceH * t;
+    const val = max - span * t;
+    return `<line x1="${left}" y1="${y}" x2="${w-right}" y2="${y}" stroke="#e2e8f0"/><text x="5" y="${y+4}" font-size="11" fill="#64748b">${fmt.format(Math.round(val))}</text>`;
+  }).join("");
+  return `<svg class="chart" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none">
+    <rect width="${w}" height="${h}" fill="#fbfdff"/>
+    ${grid}
+    ${bars}
+    <polyline points="${priceLine}" fill="none" stroke="${color}" stroke-width="3"/>
+    <polyline points="${lineFor(ma5)}" fill="none" stroke="#f59e0b" stroke-width="2"/>
+    <polyline points="${lineFor(ma20)}" fill="none" stroke="#7c3aed" stroke-width="2"/>
+    <text x="${left}" y="14" font-size="11" font-weight="800" fill="${color}">종가</text>
+    <text x="${left+44}" y="14" font-size="11" font-weight="800" fill="#f59e0b">MA5</text>
+    <text x="${left+86}" y="14" font-size="11" font-weight="800" fill="#7c3aed">MA20</text>
+  </svg>`;
+}
+function actionsUrl() {
+  const host = location.hostname;
+  if (!host.endsWith("github.io")) return "https://github.com/";
+  const owner = host.split(".")[0];
+  const repo = location.pathname.split("/").filter(Boolean)[0];
+  if (!owner || !repo) return "https://github.com/";
+  return `https://github.com/${owner}/${repo}/actions/workflows/mobile-analysis.yml`;
+}
+async function loadData() {
+  const res = await fetch(`data.json?t=${Date.now()}`);
+  if (!res.ok) throw new Error("아직 분석 데이터가 없습니다. GitHub Actions 실행 후 다시 열어주세요.");
+  const data = await res.json();
+  lastPayload = data;
+  render(data);
+}
+function render(data) {
+  const items = data.items || [];
+  document.querySelector("#stamp").textContent = `생성: ${data.generatedAt || "-"} · ${data.marketCsv || ""}`;
+  document.querySelector("#m-count").textContent = data.count || items.length;
+  document.querySelector("#m-strong").textContent = items.filter(x => Number(x.discoveryScore) >= 75).length;
+  document.querySelector("#m-flow").textContent = items.filter(x => Number(x.flowRatio) >= .05).length;
+  const order = ["nasdaq","sox","nvidia","tesla","bio","usdkrw","oil","china"];
+  document.querySelector("#signals").innerHTML = order.map(k => data.signals?.[k]).filter(Boolean).map(sig => {
+    const chg = Number(sig.change_pct || 0);
+    return `<div class="signal"><b>${esc(sig.label || sig.symbol)}</b><span class="${cls(chg)}">${pct(chg)}</span></div>`;
+  }).join("");
+  document.querySelector("#sectors").innerHTML = (data.sectors || []).map(group => `
+    <div class="sector">
+      <b>${esc(group.sector)} · ${Number(group.topScore || 0).toFixed(1)}</b>
+      ${(group.items || []).map(x => `<span>${esc(x.name)} ${Number(x.score || 0).toFixed(1)}점 · ${esc(x.theme)}</span>`).join("")}
+    </div>
+  `).join("") || `<div class="empty">섹터 후보 없음</div>`;
+  document.querySelector("#stocks").innerHTML = items.map(item => `
+    <article class="stock">
+      <div class="stock-head" onclick="this.closest('.stock').classList.toggle('open')">
+        <div>
+          <h3>${item.rank}. ${esc(item.name)}</h3>
+          <div class="sub">${esc(item.code)} · ${esc(item.sector)} · ${esc(item.theme)}</div>
+          ${(item.tags || []).map(t => `<span class="tag">${esc(t)}</span>`).join("")}
+        </div>
+        <div class="score">${Number(item.discoveryScore || 0).toFixed(1)}</div>
+      </div>
+      <div class="flow">
+        <div><span>등락률</span><b class="${cls(item.changeRate)}">${pct(item.changeRate)}</b></div>
+        <div><span>수급집중</span><b>${(Number(item.flowRatio || 0) * 100).toFixed(1)}%</b></div>
+        <div><span>미국영향</span><b class="${cls(item.usImpact)}">${Number(item.usImpact || 0) >= 0 ? "+" : ""}${Number(item.usImpact || 0).toFixed(1)}</b></div>
+      </div>
+      <div class="detail">
+        ${chart(item.chart)}
+        <div class="flow">
+          <div><span>외국인</span><b>${money(item.foreign)}</b></div>
+          <div><span>기관</span><b>${money(item.institution)}</b></div>
+          <div><span>거래대금</span><b>${money(item.value)}</b></div>
+        </div>
+        <ul>${(item.reasons || ["근거 부족"]).map(x => `<li>${esc(x)}</li>`).join("")}</ul>
+      </div>
+    </article>
+  `).join("") || `<div class="empty">분석 결과 없음</div>`;
+}
+document.querySelector("#refresh").addEventListener("click", () => loadData().catch(err => alert(err.message)));
+document.querySelector("#runAction").addEventListener("click", () => {
+  window.open(actionsUrl(), "_blank", "noopener");
+});
+loadData().catch(err => {
+  document.querySelector("#stocks").innerHTML = `<div class="empty">${esc(err.message)}</div>`;
+});
+setInterval(() => loadData().catch(() => {}), 120000);
+</script>
+</body>
+</html>

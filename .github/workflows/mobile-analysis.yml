@@ -1,0 +1,60 @@
+name: Mobile stock analysis
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "*/10 0-6 * * 1-5"
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    env:
+      KIS_APP_KEY: ${{ secrets.KIS_APP_KEY }}
+      KIS_APP_SECRET: ${{ secrets.KIS_APP_SECRET }}
+      KIS_ACCOUNT_NO: ${{ secrets.KIS_ACCOUNT_NO }}
+      KIS_PRODUCT_CODE: ${{ secrets.KIS_PRODUCT_CODE || '01' }}
+      KIS_VIRTUAL: ${{ secrets.KIS_VIRTUAL || 'true' }}
+      DART_API_KEY: ${{ secrets.DART_API_KEY }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Check secrets
+        run: |
+          test -n "$KIS_APP_KEY"
+          test -n "$KIS_APP_SECRET"
+
+      - name: Fetch KIS supply and volume candidates
+        run: python3 stock_force_tracker.py fetch-kis-supply --delay 1.2 --retries 5
+
+      - name: Fetch global signals
+        run: python3 -c "from global_signals import fetch_global_signals; fetch_global_signals()"
+
+      - name: Build mobile data
+        run: python3 mobile_export.py
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

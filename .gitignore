@@ -1,0 +1,11 @@
+.env
+.kis_token_cache.json
+.DS_Store
+__pycache__/
+*.pyc
+reports/
+data/global_signals.json
+data/kis_market.csv
+data/kis_raw/
+data/krx/kis_*.csv
+docs/data.json
