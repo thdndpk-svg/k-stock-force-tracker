@@ -44,7 +44,15 @@ def analyze_payload() -> dict[str, object]:
     history = load_history_dir(DATA_DIR / "history")
     signal_payload = load_global_signals()
     signals = signal_payload.get("signals", {})
-    results = ForceTracker(snapshots, history, signals).score_all(limit=40)
+    all_results = ForceTracker(snapshots, history, signals).score_all(limit=max(40, len(snapshots)))
+    results = all_results[:40]
+    bottom_results = sorted(
+        [item for item in all_results if item.bottom_score >= 60.0],
+        key=lambda item: (item.bottom_score, item.discovery_score),
+        reverse=True,
+    )[:8]
+    result_codes = {item.code for item in results}
+    results.extend([item for item in bottom_results if item.code not in result_codes])
     snapshots_by_code = {item.code: item for item in snapshots}
     sector_groups: dict[str, list[dict[str, object]]] = {}
     for item in results:
@@ -63,6 +71,22 @@ def analyze_payload() -> dict[str, object]:
         "investorCsv": ", ".join(path.name for path in investor_paths),
         "signals": signals,
         "signalUpdatedAt": signal_payload.get("updated_at", 0),
+        "bottomCandidates": [
+            {
+                "code": item.code,
+                "name": item.name,
+                "score": item.bottom_score,
+                "stage": item.bottom_stage,
+                "support": item.bottom_support,
+                "longLine": item.bottom_long_line,
+                "touchCount": item.bottom_touch_count,
+                "reasons": item.bottom_reasons,
+                "warnings": item.bottom_warnings,
+                "discoveryScore": item.discovery_score,
+                "chart": chart_points(snapshots_by_code[item.code], history) if item.code in snapshots_by_code else [],
+            }
+            for item in bottom_results
+        ],
         "sectors": [
             {"sector": sector, "items": items[:3], "topScore": items[0]["score"] if items else 0}
             for sector, items in sorted(sector_groups.items(), key=lambda pair: pair[1][0]["score"], reverse=True)
@@ -88,6 +112,13 @@ def analyze_payload() -> dict[str, object]:
                 "flowRatio": item.flow_ratio,
                 "usImpact": item.us_impact,
                 "issueScore": item.issue_score,
+                "bottomScore": item.bottom_score,
+                "bottomStage": item.bottom_stage,
+                "bottomSupport": item.bottom_support,
+                "bottomLongLine": item.bottom_long_line,
+                "bottomTouchCount": item.bottom_touch_count,
+                "bottomReasons": item.bottom_reasons,
+                "bottomWarnings": item.bottom_warnings,
                 "foreign": item.foreign_net_value,
                 "institution": item.institution_net_value,
                 "foreignAvailable": item.foreign_net_available,
@@ -149,6 +180,13 @@ button.live-on { background: #dc2626; }
 .insight-grid { display: grid; grid-template-columns: 1.2fr .8fr; gap: 14px; margin-bottom: 16px; }
 .insight-panel { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 14px; }
 .insight-panel h2 { margin: 0 0 10px; font-size: 16px; }
+.bottom-alert { display:none; background:#fff7ed; border:1px solid #fed7aa; border-left:5px solid #ea580c; border-radius:8px; padding:14px; margin-bottom:16px; }
+.bottom-alert.open { display:block; }
+.bottom-alert h2 { margin:0 0 8px; font-size:17px; }
+.bottom-list { display:grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap:10px; }
+.bottom-card { border:1px solid #fed7aa; border-radius:8px; background:#fffbeb; padding:10px; cursor:pointer; }
+.bottom-card b { display:block; }
+.bottom-card span { display:block; color:#7c2d12; font-size:12px; margin-top:4px; line-height:1.45; }
 .sector-strip { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
 .sector-card { border: 1px solid var(--line); border-radius: 8px; padding: 10px; background: #f8fafc; }
 .sector-card b { display:block; font-size: 15px; margin-bottom: 6px; }
@@ -199,6 +237,7 @@ tr.stock-row:hover { background: #f8fafc; }
 .detail-list { margin: 0; padding-left: 18px; line-height: 1.55; color: #334155; }
 @media (max-width: 860px) {
   .grid, .detail-grid, .detail-body, .insight-grid, .sector-strip, .signal-list { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .bottom-list { grid-template-columns: 1fr; }
   table { font-size: 12px; }
   th:nth-child(7), td:nth-child(7), th:nth-child(8), td:nth-child(8) { display: none; }
 }
@@ -224,6 +263,10 @@ tr.stock-row:hover { background: #f8fafc; }
     <div class="metric">섹터 후보<b id="m-sector">-</b></div>
     <div class="metric">수급 집중<b id="m-flow">-</b></div>
     <div class="metric">위험 표시<b id="m-risk">-</b></div>
+  </section>
+  <section class="bottom-alert" id="bottomAlert">
+    <h2>바닥매집 알림</h2>
+    <div class="bottom-list" id="bottomCards"></div>
   </section>
   <section class="insight-grid">
     <div class="insight-panel">
@@ -262,6 +305,7 @@ tr.stock-row:hover { background: #f8fafc; }
       <div class="detail-card"><span>기관 순매수</span><b id="d-inst">-</b></div>
       <div class="detail-card"><span>수급 집중</span><b id="d-flow">-</b></div>
       <div class="detail-card"><span>미국 영향</span><b id="d-us">-</b></div>
+      <div class="detail-card"><span>바닥매집</span><b id="d-bottom">-</b></div>
     </div>
     <div class="chart-wrap"><div class="big-chart" id="d-chart"></div></div>
     <div class="detail-body">
@@ -276,6 +320,7 @@ let currentItems = [];
 let liveTimer = null;
 let liveRunning = false;
 let lastDataLabel = "";
+let bottomAutoOpened = false;
 const LIVE_INTERVAL_MS = 30000;
 function money(v) {
   const n = Number(v || 0);
@@ -410,6 +455,16 @@ async function load() {
   document.querySelector("#m-risk").textContent = data.items.filter(x => x.recommendation === "위험").length;
   lastDataLabel = `${data.marketCsv || ""} ${data.investorCsv || ""}`;
   setLiveStatus(liveRunning ? "실시간 대기" : "대기");
+  const bottomCandidates = data.bottomCandidates || [];
+  const bottomAlert = document.querySelector("#bottomAlert");
+  bottomAlert.classList.toggle("open", bottomCandidates.length > 0);
+  document.querySelector("#bottomCards").innerHTML = bottomCandidates.map(item => `
+    <div class="bottom-card" onclick="openDetail('${item.code}')">
+      <b>${esc(item.name)} · ${Number(item.score || 0).toFixed(1)}점</b>
+      <span>${esc(item.stage || "바닥매집 후보")} · 지지 ${fmt.format(item.support || 0)}원 · 터치 ${item.touchCount || 0}회</span>
+      <span>${(item.reasons || []).slice(0, 2).map(esc).join(" / ")}</span>
+    </div>
+  `).join("");
   document.querySelector("#sectorCards").innerHTML = (data.sectors || []).map(group => `
     <div class="sector-card">
       <b>${esc(group.sector)} · ${Number(group.topScore).toFixed(1)}</b>
@@ -436,6 +491,13 @@ async function load() {
       <td class="reasons">${item.reasons.join("<br>")}${item.penalties.length ? `<br><span class="penalty">${item.penalties.join("<br>")}</span>` : ""}</td>
     </tr>
   `).join("");
+  if (!bottomAutoOpened && bottomCandidates.length) {
+    const first = bottomCandidates.find(candidate => currentItems.some(item => item.code === candidate.code));
+    if (first) {
+      bottomAutoOpened = true;
+      setTimeout(() => openDetail(first.code), 250);
+    }
+  }
 }
 function setLiveStatus(text) {
   const dot = document.querySelector("#liveDot");
@@ -485,9 +547,13 @@ function openDetail(code) {
   document.querySelector("#d-inst").innerHTML = flow(item.institution, item.institutionAvailable);
   document.querySelector("#d-flow").textContent = `${(Number(item.flowRatio || 0) * 100).toFixed(1)}%`;
   document.querySelector("#d-us").textContent = `${Number(item.usImpact || 0) >= 0 ? "+" : ""}${Number(item.usImpact || 0).toFixed(1)}`;
+  document.querySelector("#d-bottom").textContent = item.bottomScore >= 45 ? `${Number(item.bottomScore).toFixed(1)}점` : "해당 없음";
   document.querySelector("#d-chart").innerHTML = detailedChart(item.chart);
-  document.querySelector("#d-reasons").innerHTML = (item.reasons.length ? item.reasons : ["상승 근거 부족"]).map(x => `<li>${esc(x)}</li>`).join("");
-  document.querySelector("#d-penalties").innerHTML = (item.penalties.length ? item.penalties : ["특별한 감점 없음"]).map(x => `<li>${esc(x)}</li>`).join("");
+  const detailReasons = [...(item.reasons || [])];
+  if (item.bottomScore >= 45) detailReasons.push(...(item.bottomReasons || []).map(x => `바닥매집: ${x}`));
+  const detailWarnings = [...(item.penalties || []), ...(item.bottomWarnings || [])];
+  document.querySelector("#d-reasons").innerHTML = (detailReasons.length ? detailReasons : ["상승 근거 부족"]).map(x => `<li>${esc(x)}</li>`).join("");
+  document.querySelector("#d-penalties").innerHTML = (detailWarnings.length ? detailWarnings : ["특별한 감점 없음"]).map(x => `<li>${esc(x)}</li>`).join("");
   document.querySelector("#detailModal").classList.add("open");
 }
 document.querySelector("#closeDetail").addEventListener("click", () => document.querySelector("#detailModal").classList.remove("open"));

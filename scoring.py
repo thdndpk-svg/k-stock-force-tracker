@@ -3,6 +3,7 @@ from __future__ import annotations
 from math import log10
 from statistics import mean
 
+from bottom_accumulation import score_bottom_accumulation
 from models import HistoryBar, ScoreBreakdown, StockSnapshot
 from theme_engine import classify_stock, is_etf_like, theme_us_impact
 
@@ -56,6 +57,7 @@ class ForceTracker:
         close_strength = (item.close - item.low) / (item.high - item.low) if item.high > item.low else 0.5
         previous_high = max((bar.high for bar in recent[:-1]), default=item.high)
         previous_close_high = max((bar.close for bar in recent[:-1]), default=item.close)
+        bottom_signal = score_bottom_accumulation(item, bars)
         sector, theme, issue_tags = classify_stock(item.name)
         us_impact = theme_us_impact(theme, self.global_signals)
         positive_foreign = max(0.0, item.foreign_net_value) if item.foreign_net_available else 0.0
@@ -150,6 +152,14 @@ class ForceTracker:
             points -= 5.0
             penalties.append("대형주 노출 과다")
 
+        if bottom_signal.is_candidate:
+            points += min(10.0, bottom_signal.score / 10.0)
+            tags.insert(0, "바닥매집")
+            reasons.append(f"{bottom_signal.stage} {bottom_signal.score:.1f}점")
+            reasons.extend(bottom_signal.reasons[:2])
+        elif bottom_signal.score >= 45.0:
+            tags.append("바닥관찰")
+
         if item.short_sale_value and item.short_sale_value > item.trading_value * 0.12:
             points -= 7.0
             penalties.append("공매도 비중 부담")
@@ -169,6 +179,7 @@ class ForceTracker:
                 score
                 + min(14.0, flow_ratio * 140.0)
                 + min(10.0, max(0.0, volume_ratio - 1.0) * 3.0)
+                + min(8.0, max(0.0, bottom_signal.score - 55.0) * 0.25)
                 - (8.0 if item.trading_value > 1_000_000_000_000 else 0.0)
             ),
             1,
@@ -191,6 +202,13 @@ class ForceTracker:
             theme=theme,
             us_impact=round(us_impact, 1),
             issue_score=round(issue_points, 1),
+            bottom_score=bottom_signal.score,
+            bottom_stage=bottom_signal.stage,
+            bottom_support=bottom_signal.support_price,
+            bottom_long_line=bottom_signal.long_line,
+            bottom_touch_count=bottom_signal.touch_count,
+            bottom_reasons=bottom_signal.reasons,
+            bottom_warnings=bottom_signal.warnings,
             foreign_net_available=item.foreign_net_available,
             institution_net_available=item.institution_net_available,
             tags=tags[:5],

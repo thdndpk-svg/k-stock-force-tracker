@@ -61,6 +61,13 @@ class ScoreBreakdown:
     theme: str = "기타"
     us_impact: float = 0.0
     issue_score: float = 0.0
+    bottom_score: float = 0.0
+    bottom_stage: str = ""
+    bottom_support: float = 0.0
+    bottom_long_line: float = 0.0
+    bottom_touch_count: int = 0
+    bottom_reasons: list[str] = field(default_factory=list)
+    bottom_warnings: list[str] = field(default_factory=list)
     foreign_net_available: bool = False
     institution_net_available: bool = False
     tags: list[str] = field(default_factory=list)

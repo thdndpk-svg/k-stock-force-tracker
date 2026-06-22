@@ -55,6 +55,27 @@ def history(code: str, close: float, volume: float) -> list[HistoryBar]:
     ]
 
 
+def box_history(code: str) -> list[HistoryBar]:
+    start = date(2026, 4, 1)
+    bars = []
+    for idx in range(30):
+        low = 92 if idx in {2, 11, 22} else 96
+        close = 101 + (idx % 4)
+        bars.append(
+            HistoryBar(
+                code=code,
+                trade_date=start + timedelta(days=idx),
+                open=close - 1,
+                high=114,
+                low=low,
+                close=close,
+                volume=400_000,
+                trading_value=close * 400_000,
+            )
+        )
+    return bars
+
+
 class ForceTrackerTest(unittest.TestCase):
     def test_top_rank_prefers_strong_foreign_volume_breakout(self) -> None:
         strong = snapshot("000660", "SK하이닉스", 268500, 6_000_000, 400_000_000_000, 38_000_000_000, 20_000_000_000)
@@ -75,6 +96,32 @@ class ForceTrackerTest(unittest.TestCase):
         score = ForceTracker([warned], {}).score_snapshot(warned)
         self.assertLess(score.score, 80)
         self.assertTrue(score.penalties)
+
+    def test_bottom_accumulation_signal_adds_tag(self) -> None:
+        item = StockSnapshot(
+            code="039610",
+            name="화성밸브",
+            market="KOSDAQ",
+            trade_date=date(2026, 5, 1),
+            open=99,
+            high=108,
+            low=94,
+            close=104,
+            prev_close=100,
+            volume=900_000,
+            trading_value=9_360_000_000,
+            change_rate=4.0,
+            foreign_net_value=500_000_000,
+            institution_net_value=250_000_000,
+            foreign_net_available=True,
+            institution_net_available=True,
+        )
+
+        score = ForceTracker([item], {"039610": box_history("039610")}).score_snapshot(item)
+
+        self.assertGreaterEqual(score.bottom_score, 60)
+        self.assertIn("바닥매집", score.tags)
+        self.assertTrue(score.bottom_reasons)
 
 
 if __name__ == "__main__":

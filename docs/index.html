@@ -31,6 +31,13 @@ button { border:0; border-radius:8px; background:var(--blue); color:white; font-
 .metric b { display:block; margin-top:5px; font-size:20px; }
 .panel { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:12px; margin-bottom:12px; }
 .panel h2 { margin:0 0 9px; font-size:16px; }
+.bottom-alert { display:none; background:#fff7ed; border:1px solid #fed7aa; border-left:5px solid #ea580c; border-radius:8px; padding:12px; margin-bottom:12px; }
+.bottom-alert.open { display:block; }
+.bottom-alert h2 { margin:0 0 8px; font-size:16px; }
+.bottom-item { border-top:1px solid #fed7aa; padding:8px 0; }
+.bottom-item:first-of-type { border-top:0; }
+.bottom-item b { display:block; }
+.bottom-item span { display:block; color:#7c2d12; font-size:12px; line-height:1.45; margin-top:3px; }
 .signals { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:7px; }
 .signal { display:flex; justify-content:space-between; gap:8px; border:1px solid var(--line); border-radius:8px; padding:8px; font-size:12px; background:#f8fafc; }
 .pos { color:var(--red); font-weight:800; }
@@ -75,6 +82,10 @@ ul { margin:9px 0 0; padding-left:18px; color:#334155; font-size:13px; line-heig
     <div class="metric"><span>분석 종목</span><b id="m-count">-</b></div>
     <div class="metric"><span>발굴 강함</span><b id="m-strong">-</b></div>
     <div class="metric"><span>수급 집중</span><b id="m-flow">-</b></div>
+  </section>
+  <section class="bottom-alert" id="bottomAlert">
+    <h2>바닥매집 알림</h2>
+    <div id="bottomList"></div>
   </section>
   <section class="panel">
     <h2>미국/글로벌 영향</h2>
@@ -165,10 +176,20 @@ async function loadData() {
 }
 function render(data) {
   const items = data.items || [];
+  const bottomCandidates = data.bottomCandidates || [];
+  const bottomCodes = new Set(bottomCandidates.map(item => item.code));
   document.querySelector("#stamp").textContent = `생성: ${data.generatedAt || "-"} · ${data.marketCsv || ""}`;
   document.querySelector("#m-count").textContent = data.count || items.length;
   document.querySelector("#m-strong").textContent = items.filter(x => Number(x.discoveryScore) >= 75).length;
   document.querySelector("#m-flow").textContent = items.filter(x => Number(x.flowRatio) >= .05).length;
+  document.querySelector("#bottomAlert").classList.toggle("open", bottomCandidates.length > 0);
+  document.querySelector("#bottomList").innerHTML = bottomCandidates.map(item => `
+    <div class="bottom-item">
+      <b>${esc(item.name)} · ${Number(item.score || 0).toFixed(1)}점</b>
+      <span>${esc(item.stage || "바닥매집 후보")} · 지지 ${fmt.format(item.support || 0)}원 · 터치 ${item.touchCount || 0}회</span>
+      <span>${(item.reasons || []).slice(0,2).map(esc).join(" / ")}</span>
+    </div>
+  `).join("");
   const order = ["nasdaq","sox","nvidia","tesla","bio","usdkrw","oil","china"];
   document.querySelector("#signals").innerHTML = order.map(k => data.signals?.[k]).filter(Boolean).map(sig => {
     const chg = Number(sig.change_pct || 0);
@@ -181,7 +202,7 @@ function render(data) {
     </div>
   `).join("") || `<div class="empty">섹터 후보 없음</div>`;
   document.querySelector("#stocks").innerHTML = items.map(item => `
-    <article class="stock">
+    <article class="stock ${bottomCodes.has(item.code) ? "open" : ""}">
       <div class="stock-head" onclick="this.closest('.stock').classList.toggle('open')">
         <div>
           <h3>${item.rank}. ${esc(item.name)}</h3>
@@ -203,6 +224,7 @@ function render(data) {
           <div><span>거래대금</span><b>${money(item.value)}</b></div>
         </div>
         <ul>${(item.reasons || ["근거 부족"]).map(x => `<li>${esc(x)}</li>`).join("")}</ul>
+        ${Number(item.bottomScore || 0) >= 45 ? `<ul>${(item.bottomReasons || []).map(x => `<li>바닥매집: ${esc(x)}</li>`).join("")}</ul>` : ""}
       </div>
     </article>
   `).join("") || `<div class="empty">분석 결과 없음</div>`;
