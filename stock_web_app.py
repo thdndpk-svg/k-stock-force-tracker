@@ -20,7 +20,7 @@ from scoring import ForceTracker
 
 
 def chart_points(item, history) -> list[dict[str, float | str]]:
-    bars = history.get(item.code, [])[-29:]
+    bars = history.get(item.code, [])[-119:]
     points = [
         {
             "date": bar.trade_date.isoformat(),
@@ -33,7 +33,7 @@ def chart_points(item, history) -> list[dict[str, float | str]]:
         points.append({"date": "전일", "close": item.prev_close, "volume": 0.0})
     if points[-1]["date"] != item.trade_date.isoformat():
         points.append({"date": item.trade_date.isoformat(), "close": item.close, "volume": item.volume})
-    return points[-30:]
+    return points[-120:]
 
 
 def analyze_payload() -> dict[str, object]:
@@ -76,6 +76,8 @@ def analyze_payload() -> dict[str, object]:
                 "code": item.code,
                 "name": item.name,
                 "score": item.bottom_score,
+                "tradeAction": item.trade_action,
+                "tradeReason": item.trade_reason,
                 "stage": item.bottom_stage,
                 "support": item.bottom_support,
                 "longLine": item.bottom_long_line,
@@ -102,6 +104,8 @@ def analyze_payload() -> dict[str, object]:
                 "theme": item.theme,
                 "grade": item.grade,
                 "recommendation": item.recommendation,
+                "tradeAction": item.trade_action,
+                "tradeReason": item.trade_reason,
                 "risk": item.risk_label,
                 "score": item.score,
                 "discoveryScore": item.discovery_score,
@@ -148,7 +152,7 @@ INDEX_HTML = """<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>국내주식 세력 매수 추적기</title>
+<title>윤희야 대박나라 화이팅</title>
 <style>
 :root {
   color-scheme: light;
@@ -211,6 +215,10 @@ tr.stock-row:hover { background: #f8fafc; }
 .rec-watch { background: var(--green); }
 .rec-neutral { background: #64748b; }
 .rec-risk { background: #111827; }
+.action { display: inline-flex; min-width: 78px; justify-content: center; border-radius: 8px; padding: 5px 9px; color: white; font-size: 12px; font-weight: 900; }
+.action-buy { background: var(--green); }
+.action-sell { background: var(--red); }
+.action-hold { background: #64748b; }
 .up { color: var(--red); font-weight: 700; }
 .down { color: var(--blue); font-weight: 700; }
 .flow.pos { color: var(--red); font-weight: 700; }
@@ -244,7 +252,7 @@ tr.stock-row:hover { background: #f8fafc; }
 </style>
 </head>
 <body>
-<header><h1>국내주식 종목 발굴 랩</h1></header>
+<header><h1>윤희야 대박나라 화이팅</h1></header>
 <main>
   <div class="toolbar">
     <div>
@@ -281,7 +289,7 @@ tr.stock-row:hover { background: #f8fafc; }
   <section class="table">
     <table>
       <thead>
-        <tr><th>순위</th><th>종목</th><th>섹터</th><th>추천</th><th>발굴</th><th>등락</th><th>그래프</th><th>수급집중</th><th>미국</th><th>신호</th><th>근거</th></tr>
+        <tr><th>순위</th><th>종목</th><th>섹터</th><th>추천</th><th>타이밍</th><th>발굴</th><th>등락</th><th>그래프</th><th>수급집중</th><th>미국</th><th>신호</th><th>근거</th></tr>
       </thead>
       <tbody id="rows"></tbody>
     </table>
@@ -298,6 +306,7 @@ tr.stock-row:hover { background: #f8fafc; }
     </div>
     <div class="detail-grid">
       <div class="detail-card"><span>추천</span><b id="d-rec">-</b></div>
+      <div class="detail-card"><span>매매 타이밍</span><b id="d-action">-</b></div>
       <div class="detail-card"><span>발굴 점수</span><b id="d-score">-</b></div>
       <div class="detail-card"><span>위험</span><b id="d-risk">-</b></div>
       <div class="detail-card"><span>거래량</span><b id="d-vol">-</b></div>
@@ -346,6 +355,11 @@ function recClass(label) {
   if (label === "위험") return "rec-risk";
   return "rec-neutral";
 }
+function actionClass(label) {
+  if (label === "매수권장") return "action-buy";
+  if (label === "매도") return "action-sell";
+  return "action-hold";
+}
 function sparkline(points, width = 118, height = 42, big = false) {
   const values = (points || []).map(p => Number(p.close || 0)).filter(v => Number.isFinite(v));
   if (values.length < 2) return `<svg class="${big ? "big-chart" : "spark"}" viewBox="0 0 ${width} ${height}"></svg>`;
@@ -368,7 +382,7 @@ function sparkline(points, width = 118, height = 42, big = false) {
     ${circles}
   </svg>`;
 }
-function detailedChart(points, width = 1040, height = 360) {
+function detailedChart(points, item = {}, width = 1040, height = 360) {
   const data = (points || []).filter(p => Number.isFinite(Number(p.close)));
   if (data.length < 2) return `<svg class="big-chart" viewBox="0 0 ${width} ${height}"></svg>`;
   const prices = data.map(p => Number(p.close));
@@ -380,8 +394,13 @@ function detailedChart(points, width = 1040, height = 360) {
   });
   const ma5 = ma(prices, 5);
   const ma20 = ma(prices, 20);
+  const ma60 = ma(prices, 60);
   const volMa5 = ma(volumes, 5);
-  const indicatorValues = prices.concat(ma5.filter(Boolean), ma20.filter(Boolean));
+  const support = Number(item.bottomSupport || 0);
+  const longLine = Number(item.bottomLongLine || 0);
+  const resistance = prices.length > 2 ? Math.max(...prices.slice(0, -1)) : 0;
+  const levels = [support, longLine, resistance].filter(v => Number.isFinite(v) && v > 0);
+  const indicatorValues = prices.concat(ma5.filter(Boolean), ma20.filter(Boolean), ma60.filter(Boolean), levels);
   const min = Math.min(...indicatorValues);
   const max = Math.max(...indicatorValues);
   const vmax = Math.max(...volumes, 1);
@@ -396,6 +415,12 @@ function detailedChart(points, width = 1040, height = 360) {
   const coords = prices.map((v, i) => [xFor(i), yFor(v)]);
   const line = coords.map(([x,y]) => `${x.toFixed(1)},${y.toFixed(1)}`).join(" ");
   const lineFor = arr => arr.map((v, i) => v ? `${xFor(i).toFixed(1)},${yFor(v).toFixed(1)}` : "").filter(Boolean).join(" ");
+  const levelLine = (value, color, label, dash = "6 4") => {
+    if (!Number.isFinite(value) || value <= 0) return "";
+    const y = yFor(value);
+    return `<line x1="${left}" y1="${y.toFixed(1)}" x2="${width-right}" y2="${y.toFixed(1)}" stroke="${color}" stroke-width="1.8" stroke-dasharray="${dash}"/>
+      <text x="${width-right-4}" y="${(y - 5).toFixed(1)}" text-anchor="end" font-size="12" font-weight="800" fill="${color}">${label} ${fmt.format(Math.round(value))}</text>`;
+  };
   const color = prices[prices.length - 1] >= prices[0] ? "#d1242f" : "#1f6feb";
   const bars = volumes.map((v, i) => {
     const x = xFor(i) - 4;
@@ -422,21 +447,27 @@ function detailedChart(points, width = 1040, height = 360) {
     <rect x="0" y="0" width="${width}" height="${height}" fill="#fbfdff"/>
     ${grid}
     <line x1="${left}" y1="${baseY}" x2="${width-right}" y2="${baseY}" stroke="#64748b" stroke-width="1.2" stroke-dasharray="5 5"/>
+    ${levelLine(support, "#0f766e", "지지")}
+    ${levelLine(longLine, "#0891b2", "장기선")}
+    ${levelLine(resistance, "#dc2626", "저항", "3 4")}
     ${bars}
     <polyline points="${volAvgLine}" fill="none" stroke="#0f766e" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" opacity=".8"/>
     <line x1="${left}" y1="${volTop + volH}" x2="${width-right}" y2="${volTop + volH}" stroke="#cbd5e1"/>
     <polyline points="${line}" fill="none" stroke="${color}" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round"/>
     <polyline points="${lineFor(ma5)}" fill="none" stroke="#f59e0b" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
     <polyline points="${lineFor(ma20)}" fill="none" stroke="#7c3aed" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+    <polyline points="${lineFor(ma60)}" fill="none" stroke="#0891b2" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
     ${coords.map(([x,y]) => `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="3" fill="${color}"/>`).join("")}
     ${labels}
     <g font-size="12" font-weight="700">
-      <rect x="${left}" y="6" width="360" height="22" rx="5" fill="rgba(255,255,255,.85)" stroke="#e2e8f0"/>
+      <rect x="${left}" y="6" width="560" height="22" rx="5" fill="rgba(255,255,255,.85)" stroke="#e2e8f0"/>
       <text x="${left + 10}" y="21" fill="${color}">종가</text>
       <text x="${left + 62}" y="21" fill="#f59e0b">MA5</text>
       <text x="${left + 112}" y="21" fill="#7c3aed">MA20</text>
-      <text x="${left + 172}" y="21" fill="#64748b">기준선</text>
-      <text x="${left + 242}" y="21" fill="#0f766e">거래량평균</text>
+      <text x="${left + 174}" y="21" fill="#0891b2">MA60/장기선</text>
+      <text x="${left + 280}" y="21" fill="#0f766e">지지선</text>
+      <text x="${left + 342}" y="21" fill="#dc2626">저항선</text>
+      <text x="${left + 412}" y="21" fill="#0f766e">거래량평균</text>
     </g>
     <text x="${left}" y="${volTop - 6}" font-size="12" fill="#64748b">거래량</text>
   </svg>`;
@@ -482,6 +513,7 @@ async function load() {
       <td><b>${item.name}</b><br><span class="note">${item.code} · ${item.market}</span></td>
       <td><b>${item.sector}</b><br><span class="note">${item.theme}</span></td>
       <td><span class="rec ${recClass(item.recommendation)}">${item.recommendation}</span><br><span class="note">위험 ${item.risk}</span></td>
+      <td><span class="action ${actionClass(item.tradeAction)}">${item.tradeAction || "보류"}</span><br><span class="note">${esc(item.tradeReason || "")}</span></td>
       <td class="score">${Number(item.discoveryScore).toFixed(1)}<br><span class="note">기본 ${Number(item.score).toFixed(1)}</span></td>
       <td>${rate(item.changeRate)}<br><span class="note">${fmt.format(item.close)}원</span></td>
       <td onclick="event.stopPropagation(); openDetail('${item.code}')">${sparkline(item.chart)}</td>
@@ -540,6 +572,7 @@ function openDetail(code) {
   document.querySelector("#d-title").textContent = `${item.name} (${item.code})`;
   document.querySelector("#d-sub").textContent = `${item.market} · ${item.tags.join(" · ") || "신호 없음"}`;
   document.querySelector("#d-rec").innerHTML = `<span class="rec ${recClass(item.recommendation)}">${item.recommendation}</span>`;
+  document.querySelector("#d-action").innerHTML = `<span class="action ${actionClass(item.tradeAction)}">${item.tradeAction || "보류"}</span><br><span class="note">${esc(item.tradeReason || "")}</span>`;
   document.querySelector("#d-score").textContent = `${Number(item.discoveryScore).toFixed(1)}점`;
   document.querySelector("#d-risk").textContent = item.risk;
   document.querySelector("#d-vol").textContent = `${item.volumeRatio.toFixed(1)}배`;
@@ -548,7 +581,7 @@ function openDetail(code) {
   document.querySelector("#d-flow").textContent = `${(Number(item.flowRatio || 0) * 100).toFixed(1)}%`;
   document.querySelector("#d-us").textContent = `${Number(item.usImpact || 0) >= 0 ? "+" : ""}${Number(item.usImpact || 0).toFixed(1)}`;
   document.querySelector("#d-bottom").textContent = item.bottomScore >= 45 ? `${Number(item.bottomScore).toFixed(1)}점` : "해당 없음";
-  document.querySelector("#d-chart").innerHTML = detailedChart(item.chart);
+  document.querySelector("#d-chart").innerHTML = detailedChart(item.chart, item);
   const detailReasons = [...(item.reasons || [])];
   if (item.bottomScore >= 45) detailReasons.push(...(item.bottomReasons || []).map(x => `바닥매집: ${x}`));
   const detailWarnings = [...(item.penalties || []), ...(item.bottomWarnings || [])];

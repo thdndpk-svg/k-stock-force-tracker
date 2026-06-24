@@ -8,7 +8,9 @@
   <key>CFBundleIdentifier</key>
   <string>local.kstock.force.tracker</string>
   <key>CFBundleName</key>
-  <string>KStockForceTracker</string>
+  <string>윤희야 대박나라 화이팅</string>
+  <key>CFBundleDisplayName</key>
+  <string>윤희야 대박나라 화이팅</string>
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>

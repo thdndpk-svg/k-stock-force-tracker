@@ -96,6 +96,7 @@ class ForceTrackerTest(unittest.TestCase):
         score = ForceTracker([warned], {}).score_snapshot(warned)
         self.assertLess(score.score, 80)
         self.assertTrue(score.penalties)
+        self.assertEqual(score.trade_action, "매도")
 
     def test_bottom_accumulation_signal_adds_tag(self) -> None:
         item = StockSnapshot(
@@ -121,6 +122,7 @@ class ForceTrackerTest(unittest.TestCase):
 
         self.assertGreaterEqual(score.bottom_score, 60)
         self.assertIn("바닥매집", score.tags)
+        self.assertEqual(score.trade_action, "매수권장")
         self.assertTrue(score.bottom_reasons)
 
 

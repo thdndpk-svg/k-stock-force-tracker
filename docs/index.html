@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>국내주식 종목 발굴 랩</title>
+<title>윤희야 대박나라 화이팅</title>
 <style>
 :root {
   --bg:#f3f5f8;
@@ -50,9 +50,16 @@ button { border:0; border-radius:8px; background:var(--blue); color:white; font-
 .stock-head { display:flex; justify-content:space-between; gap:10px; padding:12px; cursor:pointer; }
 .stock h3 { margin:0; font-size:16px; }
 .sub { color:var(--muted); font-size:12px; margin-top:3px; line-height:1.4; }
-.score { min-width:64px; text-align:right; font-size:22px; font-weight:900; }
+.score { min-width:74px; text-align:right; font-size:22px; font-weight:900; display:flex; flex-direction:column; align-items:flex-end; gap:6px; }
 .tag { display:inline-block; border-radius:999px; padding:3px 7px; margin:5px 3px 0 0; background:#e8f2ff; color:#0b5cad; font-size:11px; font-weight:800; }
-.flow { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:8px; padding:0 12px 12px; font-size:12px; }
+.trade-pill { display:inline-flex; justify-content:center; align-items:center; border-radius:8px; padding:5px 8px; color:white; font-size:11px; font-weight:900; line-height:1.1; white-space:nowrap; }
+.trade-buy { background:var(--green); }
+.trade-sell { background:var(--red); }
+.trade-hold { background:#64748b; }
+.trade-text.trade-buy { color:var(--green); background:transparent; }
+.trade-text.trade-sell { color:var(--red); background:transparent; }
+.trade-text.trade-hold { color:#475569; background:transparent; }
+.flow { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px; padding:0 12px 12px; font-size:12px; }
 .flow div { background:#f8fafc; border:1px solid var(--line); border-radius:8px; padding:8px; }
 .flow span { display:block; color:var(--muted); }
 .flow b { display:block; margin-top:4px; font-size:13px; }
@@ -70,7 +77,7 @@ ul { margin:9px 0 0; padding-left:18px; color:#334155; font-size:13px; line-heig
 </head>
 <body>
 <header>
-  <h1>국내주식 종목 발굴 랩</h1>
+  <h1>윤희야 대박나라 화이팅</h1>
   <div class="actions">
     <button id="refresh">결과 새로고침</button>
     <button id="runAction">데이터 분석 실행</button>
@@ -121,7 +128,12 @@ function movingAverage(values, period) {
     return slice.reduce((a, b) => a + b, 0) / period;
   });
 }
-function chart(points) {
+function tradeClass(label) {
+  if (label === "매수권장") return "trade-buy";
+  if (label === "매도") return "trade-sell";
+  return "trade-hold";
+}
+function chart(points, item = {}) {
   const data = (points || []).filter(p => Number.isFinite(Number(p.close)));
   const w = 640, h = 190;
   if (data.length < 2) return `<svg class="chart" viewBox="0 0 ${w} ${h}"></svg>`;
@@ -129,13 +141,24 @@ function chart(points) {
   const volumes = data.map(p => Number(p.volume || 0));
   const ma5 = movingAverage(prices, 5);
   const ma20 = movingAverage(prices, 20);
-  const all = prices.concat(ma5.filter(Boolean), ma20.filter(Boolean));
+  const ma60 = movingAverage(prices, 60);
+  const support = Number(item.bottomSupport || 0);
+  const longLine = Number(item.bottomLongLine || 0);
+  const resistance = prices.length > 2 ? Math.max(...prices.slice(0, -1)) : 0;
+  const levels = [support, longLine, resistance].filter(v => Number.isFinite(v) && v > 0);
+  const all = prices.concat(ma5.filter(Boolean), ma20.filter(Boolean), ma60.filter(Boolean), levels);
   const min = Math.min(...all), max = Math.max(...all), span = max - min || 1;
   const vmax = Math.max(...volumes, 1);
   const left = 44, right = 12, top = 16, priceH = 104, volTop = 134, volH = 34;
   const xFor = i => left + i * ((w - left - right) / Math.max(1, data.length - 1));
   const yFor = v => top + priceH - ((v - min) / span) * priceH;
   const lineFor = arr => arr.map((v, i) => v ? `${xFor(i).toFixed(1)},${yFor(v).toFixed(1)}` : "").filter(Boolean).join(" ");
+  const levelLine = (value, color, label, dash = "6 4") => {
+    if (!Number.isFinite(value) || value <= 0) return "";
+    const y = yFor(value);
+    return `<line x1="${left}" y1="${y.toFixed(1)}" x2="${w-right}" y2="${y.toFixed(1)}" stroke="${color}" stroke-width="1.6" stroke-dasharray="${dash}"/>
+      <text x="${w-right-4}" y="${(y - 4).toFixed(1)}" text-anchor="end" font-size="10" font-weight="800" fill="${color}">${label}</text>`;
+  };
   const priceLine = lineFor(prices);
   const color = prices[prices.length - 1] >= prices[0] ? "#dc2626" : "#2563eb";
   const bars = volumes.map((v, i) => {
@@ -150,13 +173,20 @@ function chart(points) {
   return `<svg class="chart" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none">
     <rect width="${w}" height="${h}" fill="#fbfdff"/>
     ${grid}
+    ${levelLine(support, "#0f766e", "지지")}
+    ${levelLine(longLine, "#0891b2", "장기")}
+    ${levelLine(resistance, "#dc2626", "저항", "3 4")}
     ${bars}
     <polyline points="${priceLine}" fill="none" stroke="${color}" stroke-width="3"/>
     <polyline points="${lineFor(ma5)}" fill="none" stroke="#f59e0b" stroke-width="2"/>
     <polyline points="${lineFor(ma20)}" fill="none" stroke="#7c3aed" stroke-width="2"/>
+    <polyline points="${lineFor(ma60)}" fill="none" stroke="#0891b2" stroke-width="2"/>
     <text x="${left}" y="14" font-size="11" font-weight="800" fill="${color}">종가</text>
     <text x="${left+44}" y="14" font-size="11" font-weight="800" fill="#f59e0b">MA5</text>
     <text x="${left+86}" y="14" font-size="11" font-weight="800" fill="#7c3aed">MA20</text>
+    <text x="${left+134}" y="14" font-size="11" font-weight="800" fill="#0891b2">MA60/장기선</text>
+    <text x="${left+220}" y="14" font-size="11" font-weight="800" fill="#0f766e">지지</text>
+    <text x="${left+254}" y="14" font-size="11" font-weight="800" fill="#dc2626">저항</text>
   </svg>`;
 }
 function actionsUrl() {
@@ -209,15 +239,17 @@ function render(data) {
           <div class="sub">${esc(item.code)} · ${esc(item.sector)} · ${esc(item.theme)}</div>
           ${(item.tags || []).map(t => `<span class="tag">${esc(t)}</span>`).join("")}
         </div>
-        <div class="score">${Number(item.discoveryScore || 0).toFixed(1)}</div>
+        <div class="score">${Number(item.discoveryScore || 0).toFixed(1)}<span class="trade-pill ${tradeClass(item.tradeAction)}">${esc(item.tradeAction || "보류")}</span></div>
       </div>
       <div class="flow">
+        <div><span>매매 타이밍</span><b class="trade-text ${tradeClass(item.tradeAction)}">${esc(item.tradeAction || "보류")}</b></div>
         <div><span>등락률</span><b class="${cls(item.changeRate)}">${pct(item.changeRate)}</b></div>
         <div><span>수급집중</span><b>${(Number(item.flowRatio || 0) * 100).toFixed(1)}%</b></div>
         <div><span>미국영향</span><b class="${cls(item.usImpact)}">${Number(item.usImpact || 0) >= 0 ? "+" : ""}${Number(item.usImpact || 0).toFixed(1)}</b></div>
       </div>
       <div class="detail">
-        ${chart(item.chart)}
+        ${chart(item.chart, item)}
+        <ul><li>타이밍: ${esc(item.tradeAction || "보류")} · ${esc(item.tradeReason || "")}</li></ul>
         <div class="flow">
           <div><span>외국인</span><b>${money(item.foreign)}</b></div>
           <div><span>기관</span><b>${money(item.institution)}</b></div>

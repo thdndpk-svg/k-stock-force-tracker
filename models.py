@@ -99,6 +99,38 @@ class ScoreBreakdown:
         return "관망"
 
     @property
+    def trade_action(self) -> str:
+        if self.is_risky:
+            return "매도"
+        if self.change_rate >= 18.0:
+            return "매도"
+        if any("분할매도" in warning for warning in self.bottom_warnings):
+            return "매도"
+        if any("당일 과열" in penalty for penalty in self.penalties):
+            return "매도"
+        if self.discovery_score >= 72 and self.score >= 62 and self.risk_label == "낮음":
+            return "매수권장"
+        if self.bottom_score >= 60 and self.change_rate <= 11.0 and self.risk_label == "낮음":
+            return "매수권장"
+        return "보류"
+
+    @property
+    def trade_reason(self) -> str:
+        if self.trade_action == "매도":
+            if self.is_risky:
+                return "위험 지정 또는 감점 신호가 있어 방어 우선"
+            if self.change_rate >= 18.0 or any("분할매도" in warning for warning in self.bottom_warnings):
+                return "당일 급등 구간이라 추격보다 분할매도 주의"
+            return "과열 신호 확인"
+        if self.trade_action == "매수권장":
+            if self.bottom_score >= 60:
+                return "바닥매집 후보와 수급/거래 신호 동시 확인"
+            return "발굴 점수와 수급 신호가 매수권"
+        if self.discovery_score >= 55 or self.bottom_score >= 45:
+            return "관심권이지만 추가 확인 필요"
+        return "매수 신호 부족"
+
+    @property
     def is_risky(self) -> bool:
         risk_words = ("거래정지", "관리", "투자경고", "위험", "공매도")
         return any(any(word in penalty for word in risk_words) for penalty in self.penalties)
