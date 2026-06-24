@@ -18,6 +18,7 @@ from global_signals import load_global_signals
 from kis_client import KisApiError, KisClient, save_json
 from kis_supply import aggregate_supply_rows, load_market_csv_rows, market_rows_from_supply_rows, market_rows_from_volume_rank, merge_market_rows, save_market_csv, save_supply_csv
 from krx_downloader import fetch_krx_bundle
+from price_normalizer import normalize_snapshots_to_history
 from scoring import ForceTracker
 
 
@@ -38,6 +39,7 @@ def run_analyze(args: argparse.Namespace) -> int:
     snapshots = load_market_snapshots(market_csv)
     snapshots = merge_krx_investor_csvs(snapshots, investor_paths) if investor_paths else snapshots
     history = load_history_dir(Path(args.history_dir))
+    snapshots = normalize_snapshots_to_history(snapshots, history)
     signals = load_global_signals().get("signals", {})
     results = ForceTracker(snapshots, history, signals).score_all(limit=args.limit)
     rows = [

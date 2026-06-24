@@ -16,6 +16,8 @@ from global_signals import fetch_global_signals, load_global_signals
 from kis_client import KisApiError, KisClient, save_json
 from kis_supply import aggregate_supply_rows, load_market_csv_rows, market_rows_from_price_payload, market_rows_from_supply_rows, market_rows_from_volume_rank, merge_market_rows, normalize_live_rows, save_market_csv, save_supply_csv
 from krx_downloader import fetch_krx_bundle
+from price_normalizer import normalize_snapshots_to_history
+from professional_analysis import build_professional_view
 from scoring import ForceTracker
 
 
@@ -24,15 +26,18 @@ def chart_points(item, history) -> list[dict[str, float | str]]:
     points = [
         {
             "date": bar.trade_date.isoformat(),
+            "open": bar.open,
+            "high": bar.high,
+            "low": bar.low,
             "close": bar.close,
             "volume": bar.volume,
         }
         for bar in bars
     ]
     if not points:
-        points.append({"date": "전일", "close": item.prev_close, "volume": 0.0})
+        points.append({"date": "전일", "open": item.prev_close, "high": item.prev_close, "low": item.prev_close, "close": item.prev_close, "volume": 0.0})
     if points[-1]["date"] != item.trade_date.isoformat():
-        points.append({"date": item.trade_date.isoformat(), "close": item.close, "volume": item.volume})
+        points.append({"date": item.trade_date.isoformat(), "open": item.open, "high": item.high, "low": item.low, "close": item.close, "volume": item.volume})
     return points[-120:]
 
 
@@ -42,6 +47,7 @@ def analyze_payload() -> dict[str, object]:
     snapshots = load_market_snapshots(market_csv)
     snapshots = merge_krx_investor_csvs(snapshots, investor_paths) if investor_paths else snapshots
     history = load_history_dir(DATA_DIR / "history")
+    snapshots = normalize_snapshots_to_history(snapshots, history)
     signal_payload = load_global_signals()
     signals = signal_payload.get("signals", {})
     all_results = ForceTracker(snapshots, history, signals).score_all(limit=max(40, len(snapshots)))
@@ -131,6 +137,7 @@ def analyze_payload() -> dict[str, object]:
                 "reasons": item.reasons,
                 "penalties": item.penalties,
                 "chart": chart_points(snapshots_by_code[item.code], history),
+                "pro": build_professional_view(item, history.get(item.code, [])),
             }
             for idx, item in enumerate(results, 1)
         ],
@@ -178,7 +185,7 @@ button.live-on { background: #dc2626; }
 .note { color: var(--muted); font-size: 13px; }
 .live-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #94a3b8; margin-right: 5px; vertical-align: 1px; }
 .live-dot.on { background: #ef4444; box-shadow: 0 0 0 4px rgba(239, 68, 68, .15); }
-.grid { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 12px; margin-bottom: 16px; }
+.grid { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 12px; margin-bottom: 16px; }
 .metric { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 14px; }
 .metric b { display: block; font-size: 22px; margin-top: 6px; }
 .insight-grid { display: grid; grid-template-columns: 1.2fr .8fr; gap: 14px; margin-bottom: 16px; }
@@ -243,8 +250,17 @@ tr.stock-row:hover { background: #f8fafc; }
 .detail-box { border: 1px solid var(--line); border-radius: 8px; padding: 12px; }
 .detail-box h3 { margin: 0 0 8px; font-size: 14px; }
 .detail-list { margin: 0; padding-left: 18px; line-height: 1.55; color: #334155; }
+.pro-strip { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 8px; padding: 10px 22px 0; }
+.pro-tile { border: 1px solid var(--line); border-radius: 8px; background: #fff; padding: 10px; }
+.pro-tile span { display: block; color: var(--muted); font-size: 11px; }
+.pro-tile b { display: block; margin-top: 4px; font-size: 15px; }
+.pro-tile.positive { border-color: #9ae6b4; background: #f0fff4; }
+.pro-tile.warning { border-color: #fecaca; background: #fff5f5; }
+.pro-box { border: 1px solid var(--line); border-radius: 8px; padding: 12px; background: #fbfdff; }
+.pro-box h3 { margin: 0 0 8px; font-size: 14px; }
+.pro-note { padding: 0 22px 14px; color: #64748b; font-size: 12px; line-height: 1.45; }
 @media (max-width: 860px) {
-  .grid, .detail-grid, .detail-body, .insight-grid, .sector-strip, .signal-list { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .grid, .detail-grid, .detail-body, .insight-grid, .sector-strip, .signal-list, .pro-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .bottom-list { grid-template-columns: 1fr; }
   table { font-size: 12px; }
   th:nth-child(7), td:nth-child(7), th:nth-child(8), td:nth-child(8) { display: none; }
@@ -261,7 +277,7 @@ tr.stock-row:hover { background: #f8fafc; }
       <button id="liveToggle">실시간 OFF</button>
       <button id="fetchGlobal" style="background:#0f766e">미국 흐름 업데이트</button>
       <button id="fetchKrx" style="background:#12805c">KRX 자동수집</button>
-      <span class="note">발굴점수 = 수급집중 + 거래량이상 + 섹터/이슈 + 미국 흐름 + 차트 초입</span>
+      <span class="note">맥 전문가판 = 실시간 수급 + 차트 지표 + 손익비 플랜</span>
     </div>
     <span class="note" id="stamp"><span class="live-dot" id="liveDot"></span><span id="liveStatus">대기</span></span>
   </div>
@@ -270,6 +286,7 @@ tr.stock-row:hover { background: #f8fafc; }
     <div class="metric">발굴 강함<b id="m-strong">-</b></div>
     <div class="metric">섹터 후보<b id="m-sector">-</b></div>
     <div class="metric">수급 집중<b id="m-flow">-</b></div>
+    <div class="metric">실전 후보<b id="m-pro">-</b></div>
     <div class="metric">위험 표시<b id="m-risk">-</b></div>
   </section>
   <section class="bottom-alert" id="bottomAlert">
@@ -289,7 +306,7 @@ tr.stock-row:hover { background: #f8fafc; }
   <section class="table">
     <table>
       <thead>
-        <tr><th>순위</th><th>종목</th><th>섹터</th><th>추천</th><th>타이밍</th><th>발굴</th><th>등락</th><th>그래프</th><th>수급집중</th><th>미국</th><th>신호</th><th>근거</th></tr>
+        <tr><th>순위</th><th>종목</th><th>섹터</th><th>추천</th><th>타이밍</th><th>셋업</th><th>발굴</th><th>등락</th><th>그래프</th><th>수급집중</th><th>미국</th><th>신호</th><th>근거</th></tr>
       </thead>
       <tbody id="rows"></tbody>
     </table>
@@ -317,9 +334,13 @@ tr.stock-row:hover { background: #f8fafc; }
       <div class="detail-card"><span>바닥매집</span><b id="d-bottom">-</b></div>
     </div>
     <div class="chart-wrap"><div class="big-chart" id="d-chart"></div></div>
+    <div class="pro-strip" id="d-pro-strip"></div>
+    <div class="pro-note">이 화면은 투자 판단 보조도구입니다. 실제 주문 전에는 호가, 공시, 뉴스, 시장 급변, 본인 손절 기준을 반드시 다시 확인하세요.</div>
     <div class="detail-body">
       <div class="detail-box"><h3>상승 근거</h3><ul class="detail-list" id="d-reasons"></ul></div>
       <div class="detail-box"><h3>위험/주의</h3><ul class="detail-list" id="d-penalties"></ul></div>
+      <div class="pro-box"><h3>전문가 체크리스트</h3><ul class="detail-list" id="d-pro-checks"></ul></div>
+      <div class="pro-box"><h3>매매 플랜 경고</h3><ul class="detail-list" id="d-pro-warnings"></ul></div>
     </div>
   </div>
 </section>
@@ -347,6 +368,10 @@ function rate(v) {
   const n = Number(v || 0);
   const cls = n >= 0 ? "up" : "down";
   return `<span class="${cls}">${n.toFixed(2)}%</span>`;
+}
+function price(v) {
+  const n = Number(v || 0);
+  return n ? `${fmt.format(Math.round(n))}원` : "-";
 }
 function recClass(label) {
   if (label === "강한매수") return "rec-strong";
@@ -385,7 +410,12 @@ function sparkline(points, width = 118, height = 42, big = false) {
 function detailedChart(points, item = {}, width = 1040, height = 360) {
   const data = (points || []).filter(p => Number.isFinite(Number(p.close)));
   if (data.length < 2) return `<svg class="big-chart" viewBox="0 0 ${width} ${height}"></svg>`;
+  const pro = item.pro || {};
+  const indicators = pro.indicators || {};
   const prices = data.map(p => Number(p.close));
+  const opens = data.map(p => Number(p.open || p.close));
+  const highs = data.map(p => Number(p.high || p.close));
+  const lows = data.map(p => Number(p.low || p.close));
   const volumes = data.map(p => Number(p.volume || 0));
   const ma = (arr, period) => arr.map((_, i) => {
     if (i + 1 < period) return null;
@@ -399,8 +429,16 @@ function detailedChart(points, item = {}, width = 1040, height = 360) {
   const support = Number(item.bottomSupport || 0);
   const longLine = Number(item.bottomLongLine || 0);
   const resistance = prices.length > 2 ? Math.max(...prices.slice(0, -1)) : 0;
-  const levels = [support, longLine, resistance].filter(v => Number.isFinite(v) && v > 0);
-  const indicatorValues = prices.concat(ma5.filter(Boolean), ma20.filter(Boolean), ma60.filter(Boolean), levels);
+  const bbUpper = Number(indicators.bbUpper || 0);
+  const bbMiddle = Number(indicators.bbMiddle || 0);
+  const bbLower = Number(indicators.bbLower || 0);
+  const vwap20 = Number(indicators.vwap20 || 0);
+  const entry = Number(pro.entry || 0);
+  const stop = Number(pro.stop || 0);
+  const target1 = Number(pro.target1 || 0);
+  const target2 = Number(pro.target2 || 0);
+  const levels = [support, longLine, resistance, bbUpper, bbMiddle, bbLower, vwap20, entry, stop, target1, target2].filter(v => Number.isFinite(v) && v > 0);
+  const indicatorValues = prices.concat(highs, lows, ma5.filter(Boolean), ma20.filter(Boolean), ma60.filter(Boolean), levels);
   const min = Math.min(...indicatorValues);
   const max = Math.max(...indicatorValues);
   const vmax = Math.max(...volumes, 1);
@@ -415,6 +453,7 @@ function detailedChart(points, item = {}, width = 1040, height = 360) {
   const coords = prices.map((v, i) => [xFor(i), yFor(v)]);
   const line = coords.map(([x,y]) => `${x.toFixed(1)},${y.toFixed(1)}`).join(" ");
   const lineFor = arr => arr.map((v, i) => v ? `${xFor(i).toFixed(1)},${yFor(v).toFixed(1)}` : "").filter(Boolean).join(" ");
+  const pointsForConst = value => data.map((_, i) => `${xFor(i).toFixed(1)},${yFor(value).toFixed(1)}`).join(" ");
   const levelLine = (value, color, label, dash = "6 4") => {
     if (!Number.isFinite(value) || value <= 0) return "";
     const y = yFor(value);
@@ -422,6 +461,20 @@ function detailedChart(points, item = {}, width = 1040, height = 360) {
       <text x="${width-right-4}" y="${(y - 5).toFixed(1)}" text-anchor="end" font-size="12" font-weight="800" fill="${color}">${label} ${fmt.format(Math.round(value))}</text>`;
   };
   const color = prices[prices.length - 1] >= prices[0] ? "#d1242f" : "#1f6feb";
+  const candleWidth = Math.max(3, Math.min(11, (width - left - right) / data.length * .58));
+  const candles = data.map((_, i) => {
+    const up = prices[i] >= opens[i];
+    const color = up ? "#d1242f" : "#1f6feb";
+    const x = xFor(i);
+    const highY = yFor(highs[i]);
+    const lowY = yFor(lows[i]);
+    const openY = yFor(opens[i]);
+    const closeY = yFor(prices[i]);
+    const bodyY = Math.min(openY, closeY);
+    const bodyH = Math.max(2, Math.abs(openY - closeY));
+    return `<line x1="${x.toFixed(1)}" y1="${highY.toFixed(1)}" x2="${x.toFixed(1)}" y2="${lowY.toFixed(1)}" stroke="${color}" stroke-width="1.2" opacity=".8"/>
+      <rect x="${(x - candleWidth / 2).toFixed(1)}" y="${bodyY.toFixed(1)}" width="${candleWidth.toFixed(1)}" height="${bodyH.toFixed(1)}" fill="${color}" opacity=".72"/>`;
+  }).join("");
   const bars = volumes.map((v, i) => {
     const x = xFor(i) - 4;
     const h = Math.max(1, (v / vmax) * volH);
@@ -447,27 +500,39 @@ function detailedChart(points, item = {}, width = 1040, height = 360) {
     <rect x="0" y="0" width="${width}" height="${height}" fill="#fbfdff"/>
     ${grid}
     <line x1="${left}" y1="${baseY}" x2="${width-right}" y2="${baseY}" stroke="#64748b" stroke-width="1.2" stroke-dasharray="5 5"/>
+    ${bbUpper && bbLower ? `<polygon points="${pointsForConst(bbUpper)} ${data.map((_, i) => `${xFor(data.length - 1 - i).toFixed(1)},${yFor(bbLower).toFixed(1)}`).join(" ")}" fill="#fef3c7" opacity=".36"/>` : ""}
     ${levelLine(support, "#0f766e", "지지")}
     ${levelLine(longLine, "#0891b2", "장기선")}
     ${levelLine(resistance, "#dc2626", "저항", "3 4")}
+    ${levelLine(entry, "#111827", "진입", "2 3")}
+    ${levelLine(stop, "#b91c1c", "손절", "8 4")}
+    ${levelLine(target1, "#16a34a", "1차목표", "8 4")}
+    ${levelLine(target2, "#15803d", "2차목표", "3 4")}
     ${bars}
     <polyline points="${volAvgLine}" fill="none" stroke="#0f766e" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" opacity=".8"/>
     <line x1="${left}" y1="${volTop + volH}" x2="${width-right}" y2="${volTop + volH}" stroke="#cbd5e1"/>
-    <polyline points="${line}" fill="none" stroke="${color}" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round"/>
+    ${candles}
+    <polyline points="${line}" fill="none" stroke="${color}" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" opacity=".72"/>
     <polyline points="${lineFor(ma5)}" fill="none" stroke="#f59e0b" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
     <polyline points="${lineFor(ma20)}" fill="none" stroke="#7c3aed" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
     <polyline points="${lineFor(ma60)}" fill="none" stroke="#0891b2" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+    ${bbUpper ? `<polyline points="${pointsForConst(bbUpper)}" fill="none" stroke="#d97706" stroke-width="1.4" stroke-dasharray="4 4" opacity=".95"/>` : ""}
+    ${bbMiddle ? `<polyline points="${pointsForConst(bbMiddle)}" fill="none" stroke="#f59e0b" stroke-width="1.2" stroke-dasharray="2 4" opacity=".75"/>` : ""}
+    ${bbLower ? `<polyline points="${pointsForConst(bbLower)}" fill="none" stroke="#d97706" stroke-width="1.4" stroke-dasharray="4 4" opacity=".95"/>` : ""}
+    ${vwap20 ? `<polyline points="${pointsForConst(vwap20)}" fill="none" stroke="#0f766e" stroke-width="2.4" opacity=".9"/>` : ""}
     ${coords.map(([x,y]) => `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="3" fill="${color}"/>`).join("")}
     ${labels}
     <g font-size="12" font-weight="700">
-      <rect x="${left}" y="6" width="560" height="22" rx="5" fill="rgba(255,255,255,.85)" stroke="#e2e8f0"/>
+      <rect x="${left}" y="6" width="720" height="22" rx="5" fill="rgba(255,255,255,.85)" stroke="#e2e8f0"/>
       <text x="${left + 10}" y="21" fill="${color}">종가</text>
       <text x="${left + 62}" y="21" fill="#f59e0b">MA5</text>
       <text x="${left + 112}" y="21" fill="#7c3aed">MA20</text>
       <text x="${left + 174}" y="21" fill="#0891b2">MA60/장기선</text>
       <text x="${left + 280}" y="21" fill="#0f766e">지지선</text>
       <text x="${left + 342}" y="21" fill="#dc2626">저항선</text>
-      <text x="${left + 412}" y="21" fill="#0f766e">거래량평균</text>
+      <text x="${left + 412}" y="21" fill="#d97706">볼린저</text>
+      <text x="${left + 474}" y="21" fill="#0f766e">VWAP</text>
+      <text x="${left + 524}" y="21" fill="#111827">진입/손절/목표</text>
     </g>
     <text x="${left}" y="${volTop - 6}" font-size="12" fill="#64748b">거래량</text>
   </svg>`;
@@ -483,6 +548,7 @@ async function load() {
   document.querySelector("#m-strong").textContent = data.items.filter(x => Number(x.discoveryScore) >= 75).length;
   document.querySelector("#m-sector").textContent = (data.sectors || []).length;
   document.querySelector("#m-flow").textContent = data.items.filter(x => Number(x.flowRatio) >= .05).length;
+  document.querySelector("#m-pro").textContent = data.items.filter(x => ["공격매수 후보", "분할매수 후보"].includes(x.pro?.bias)).length;
   document.querySelector("#m-risk").textContent = data.items.filter(x => x.recommendation === "위험").length;
   lastDataLabel = `${data.marketCsv || ""} ${data.investorCsv || ""}`;
   setLiveStatus(liveRunning ? "실시간 대기" : "대기");
@@ -514,6 +580,7 @@ async function load() {
       <td><b>${item.sector}</b><br><span class="note">${item.theme}</span></td>
       <td><span class="rec ${recClass(item.recommendation)}">${item.recommendation}</span><br><span class="note">위험 ${item.risk}</span></td>
       <td><span class="action ${actionClass(item.tradeAction)}">${item.tradeAction || "보류"}</span><br><span class="note">${esc(item.tradeReason || "")}</span></td>
+      <td><b>${esc(item.pro?.bias || "-")}</b><br><span class="note">${esc(item.pro?.setup || "")}</span></td>
       <td class="score">${Number(item.discoveryScore).toFixed(1)}<br><span class="note">기본 ${Number(item.score).toFixed(1)}</span></td>
       <td>${rate(item.changeRate)}<br><span class="note">${fmt.format(item.close)}원</span></td>
       <td onclick="event.stopPropagation(); openDetail('${item.code}')">${sparkline(item.chart)}</td>
@@ -569,8 +636,10 @@ function stopLive() {
 function openDetail(code) {
   const item = currentItems.find(x => x.code === code);
   if (!item) return;
+  const pro = item.pro || {};
+  const indicators = pro.indicators || {};
   document.querySelector("#d-title").textContent = `${item.name} (${item.code})`;
-  document.querySelector("#d-sub").textContent = `${item.market} · ${item.tags.join(" · ") || "신호 없음"}`;
+  document.querySelector("#d-sub").textContent = `${item.market} · ${item.tags.join(" · ") || "신호 없음"} · ${pro.bias || "전문가판 대기"}`;
   document.querySelector("#d-rec").innerHTML = `<span class="rec ${recClass(item.recommendation)}">${item.recommendation}</span>`;
   document.querySelector("#d-action").innerHTML = `<span class="action ${actionClass(item.tradeAction)}">${item.tradeAction || "보류"}</span><br><span class="note">${esc(item.tradeReason || "")}</span>`;
   document.querySelector("#d-score").textContent = `${Number(item.discoveryScore).toFixed(1)}점`;
@@ -582,11 +651,27 @@ function openDetail(code) {
   document.querySelector("#d-us").textContent = `${Number(item.usImpact || 0) >= 0 ? "+" : ""}${Number(item.usImpact || 0).toFixed(1)}`;
   document.querySelector("#d-bottom").textContent = item.bottomScore >= 45 ? `${Number(item.bottomScore).toFixed(1)}점` : "해당 없음";
   document.querySelector("#d-chart").innerHTML = detailedChart(item.chart, item);
+  document.querySelector("#d-pro-strip").innerHTML = [
+    ["셋업", pro.setup || "-", pro.bias === "공격매수 후보" || pro.bias === "분할매수 후보" ? "positive" : ""],
+    ["진입 후보", price(pro.entry), ""],
+    ["손절 기준", price(pro.stop), "warning"],
+    ["1차 목표", price(pro.target1), "positive"],
+    ["2차 목표", price(pro.target2), "positive"],
+    ["손익비", pro.riskReward ? `${Number(pro.riskReward).toFixed(2)}배` : "-", Number(pro.riskReward || 0) >= 1.5 ? "positive" : "warning"],
+    ["RSI 14", indicators.rsi14 ? Number(indicators.rsi14).toFixed(1) : "-", Number(indicators.rsi14 || 0) >= 75 ? "warning" : ""],
+    ["MACD", indicators.macdHist ? `${Number(indicators.macdHist).toFixed(1)} 히스토그램` : "-", Number(indicators.macdHist || 0) > 0 ? "positive" : "warning"],
+    ["VWAP20", price(indicators.vwap20), item.close >= Number(indicators.vwap20 || 0) ? "positive" : "warning"],
+    ["ATR14", price(indicators.atr14), ""],
+    ["볼린저폭", indicators.bbWidth ? `${Number(indicators.bbWidth).toFixed(1)}%` : "-", ""],
+    ["추세점수", `${indicators.trendScore || 0}/5`, Number(indicators.trendScore || 0) >= 4 ? "positive" : ""],
+  ].map(([label, value, cls]) => `<div class="pro-tile ${cls}"><span>${label}</span><b>${esc(value)}</b></div>`).join("");
   const detailReasons = [...(item.reasons || [])];
   if (item.bottomScore >= 45) detailReasons.push(...(item.bottomReasons || []).map(x => `바닥매집: ${x}`));
   const detailWarnings = [...(item.penalties || []), ...(item.bottomWarnings || [])];
   document.querySelector("#d-reasons").innerHTML = (detailReasons.length ? detailReasons : ["상승 근거 부족"]).map(x => `<li>${esc(x)}</li>`).join("");
   document.querySelector("#d-penalties").innerHTML = (detailWarnings.length ? detailWarnings : ["특별한 감점 없음"]).map(x => `<li>${esc(x)}</li>`).join("");
+  document.querySelector("#d-pro-checks").innerHTML = (pro.checklist?.length ? pro.checklist : ["전문가 체크 신호 부족"]).map(x => `<li>${esc(x)}</li>`).join("");
+  document.querySelector("#d-pro-warnings").innerHTML = (pro.warnings?.length ? pro.warnings : ["추가 경고 없음"]).map(x => `<li>${esc(x)}</li>`).join("");
   document.querySelector("#detailModal").classList.add("open");
 }
 document.querySelector("#closeDetail").addEventListener("click", () => document.querySelector("#detailModal").classList.remove("open"));
