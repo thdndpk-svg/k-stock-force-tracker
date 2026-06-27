@@ -22,6 +22,7 @@ header { position:sticky; top:0; z-index:2; background:#0f172a; color:white; pad
 h1 { margin:0; font-size:20px; letter-spacing:0; }
 main { max-width:760px; margin:0 auto; padding:14px; }
 button { border:0; border-radius:8px; background:var(--blue); color:white; font-weight:800; padding:10px 12px; }
+input { border:1px solid var(--line); border-radius:8px; padding:9px 10px; font:inherit; min-width:94px; width:100%; }
 .actions { display:flex; gap:8px; margin-top:12px; flex-wrap:wrap; }
 .actions button:nth-child(2) { background:var(--green); }
 .stamp { margin-top:8px; color:#cbd5e1; font-size:12px; line-height:1.45; }
@@ -29,6 +30,16 @@ button { border:0; border-radius:8px; background:var(--blue); color:white; font-
 .metric { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:11px; }
 .metric span { display:block; color:var(--muted); font-size:12px; }
 .metric b { display:block; margin-top:5px; font-size:20px; }
+.paper-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:8px; }
+.paper-actions { display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-top:9px; }
+.paper-list { margin-top:9px; border-top:1px solid var(--line); }
+.paper-row { display:grid; grid-template-columns:1.1fr .7fr .9fr; gap:8px; padding:8px 0; border-bottom:1px solid var(--line); font-size:12px; align-items:center; }
+.paper-row b { display:block; }
+.paper-row span { color:var(--muted); }
+.paper-trade { border:1px solid var(--line); border-radius:8px; background:#f8fafc; padding:9px; margin-top:9px; }
+.paper-trade .trade-form { display:grid; grid-template-columns:1fr auto; gap:7px; margin-top:7px; }
+.mini { padding:8px 9px; font-size:12px; }
+.mini.sell { background:var(--red); }
 .panel { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:12px; margin-bottom:12px; }
 .panel h2 { margin:0 0 9px; font-size:16px; }
 .bottom-alert { display:none; background:#fff7ed; border:1px solid #fed7aa; border-left:5px solid #ea580c; border-radius:8px; padding:12px; margin-bottom:12px; }
@@ -90,6 +101,19 @@ ul { margin:9px 0 0; padding-left:18px; color:#334155; font-size:13px; line-heig
     <div class="metric"><span>발굴 강함</span><b id="m-strong">-</b></div>
     <div class="metric"><span>수급 집중</span><b id="m-flow">-</b></div>
   </section>
+  <section class="panel">
+    <h2>폰 모의투자</h2>
+    <div class="paper-grid">
+      <div class="metric"><span>총자산</span><b id="mp-equity">-</b></div>
+      <div class="metric"><span>예수금</span><b id="mp-cash">-</b></div>
+      <div class="metric"><span>수익률</span><b id="mp-return">-</b></div>
+    </div>
+    <div class="paper-actions">
+      <input id="mp-reset-cash" type="number" min="100000" step="100000" value="10000000">
+      <button id="mp-reset">계좌 재설정</button>
+    </div>
+    <div class="paper-list" id="mp-holdings"></div>
+  </section>
   <section class="bottom-alert" id="bottomAlert">
     <h2>바닥매집 알림</h2>
     <div id="bottomList"></div>
@@ -107,11 +131,119 @@ ul { margin:9px 0 0; padding-left:18px; color:#334155; font-size:13px; line-heig
 <script>
 const fmt = new Intl.NumberFormat("ko-KR");
 let lastPayload = null;
+const PAPER_KEY = "kstock-mobile-paper-v1";
 function money(v) {
   const n = Number(v || 0);
   if (Math.abs(n) >= 100000000) return `${fmt.format(Math.round(n / 100000000))}억`;
   if (Math.abs(n) >= 10000) return `${fmt.format(Math.round(n / 10000))}만`;
   return fmt.format(Math.round(n));
+}
+function price(v) {
+  const n = Number(v || 0);
+  return n ? `${fmt.format(Math.round(n))}원` : "-";
+}
+function signedMoney(v) {
+  const n = Number(v || 0);
+  const sign = n >= 0 ? "+" : "-";
+  return `<span class="${n >= 0 ? "pos" : "neg"}">${sign}${money(Math.abs(n))}</span>`;
+}
+function signedPct(v) {
+  const n = Number(v || 0);
+  return `<span class="${n >= 0 ? "pos" : "neg"}">${n >= 0 ? "+" : ""}${n.toFixed(2)}%</span>`;
+}
+function defaultPaper(cash = 10000000) {
+  return { initialCash: cash, cash, holdings: {}, trades: [] };
+}
+function loadPaper() {
+  try {
+    return JSON.parse(localStorage.getItem(PAPER_KEY)) || defaultPaper();
+  } catch {
+    return defaultPaper();
+  }
+}
+function savePaper(paper) {
+  localStorage.setItem(PAPER_KEY, JSON.stringify(paper));
+}
+function quoteMap() {
+  return Object.fromEntries((lastPayload?.items || []).map(item => [item.code, item]));
+}
+function evaluatePaper() {
+  const paper = loadPaper();
+  const quotes = quoteMap();
+  let marketValue = 0, costTotal = 0;
+  const holdings = Object.values(paper.holdings || {}).map(holding => {
+    const quote = quotes[holding.code] || {};
+    const current = Number(quote.close || holding.lastPrice || holding.avgPrice || 0);
+    const qty = Number(holding.qty || 0);
+    const avg = Number(holding.avgPrice || 0);
+    const value = qty * current;
+    const cost = qty * avg;
+    marketValue += value;
+    costTotal += cost;
+    return { ...holding, currentPrice: current, marketValue: value, pnl: value - cost, pnlPct: avg ? (current / avg - 1) * 100 : 0, signal: quote.tradeAction || holding.signal || "" };
+  });
+  const totalEquity = Number(paper.cash || 0) + marketValue;
+  const returnPct = paper.initialCash ? (totalEquity / paper.initialCash - 1) * 100 : 0;
+  return { ...paper, holdings, marketValue, totalEquity, returnPct };
+}
+function renderPaper() {
+  const paper = evaluatePaper();
+  document.querySelector("#mp-equity").innerHTML = price(paper.totalEquity);
+  document.querySelector("#mp-cash").innerHTML = price(paper.cash);
+  document.querySelector("#mp-return").innerHTML = signedPct(paper.returnPct);
+  document.querySelector("#mp-holdings").innerHTML = paper.holdings.length ? paper.holdings.map(item => `
+    <div class="paper-row">
+      <div><b>${esc(item.name)}</b><span>${esc(item.code)} · ${esc(item.signal || "-")}</span></div>
+      <div><b>${fmt.format(item.qty)}주</b><span>평단 ${price(item.avgPrice)}</span></div>
+      <div><b>${signedMoney(item.pnl)}</b><span>${signedPct(item.pnlPct)} · ${price(item.currentPrice)}</span></div>
+    </div>
+  `).join("") : `<div class="empty">보유 종목 없음</div>`;
+}
+function resetPaper() {
+  const cash = Number(document.querySelector("#mp-reset-cash").value || 10000000);
+  if (!confirm(`${fmt.format(cash)}원으로 폰 모의투자를 새로 시작할까요?`)) return;
+  savePaper(defaultPaper(cash));
+  renderPaper();
+}
+function mobileBuy(code) {
+  const quote = quoteMap()[code];
+  if (!quote) return alert("현재 분석 목록에 없는 종목입니다.");
+  const amount = Number(document.querySelector(`#mbuy-${code}`).value || 0);
+  const current = Number(quote.close || 0);
+  const paper = loadPaper();
+  const budget = Math.min(amount, Number(paper.cash || 0));
+  const qty = Math.floor(budget / current);
+  if (!current || qty <= 0) return alert("현재가 또는 예수금이 부족합니다.");
+  const cost = qty * current;
+  const old = paper.holdings[code] || { code, name: quote.name, qty: 0, avgPrice: 0 };
+  const oldCost = Number(old.qty || 0) * Number(old.avgPrice || 0);
+  const newQty = Number(old.qty || 0) + qty;
+  paper.holdings[code] = { code, name: quote.name, qty: newQty, avgPrice: (oldCost + cost) / newQty, lastPrice: current, signal: quote.tradeAction || "" };
+  paper.cash = Number(paper.cash || 0) - cost;
+  paper.trades.unshift({ side: "BUY", code, name: quote.name, qty, price: current, amount: cost, time: Date.now() });
+  paper.trades = paper.trades.slice(0, 100);
+  savePaper(paper);
+  renderPaper();
+  alert(`${quote.name} ${qty}주 모의매수 · ${price(current)}`);
+}
+function mobileSell(code, all = false) {
+  const quote = quoteMap()[code];
+  const paper = loadPaper();
+  const holding = paper.holdings[code];
+  if (!holding) return alert("보유 수량이 없습니다.");
+  const inputQty = Number(document.querySelector(`#msell-${code}`).value || 0);
+  const qty = all ? Number(holding.qty || 0) : Math.min(Number(holding.qty || 0), inputQty);
+  const current = Number(quote?.close || holding.lastPrice || 0);
+  if (!current || qty <= 0) return alert("매도 수량을 확인하세요.");
+  const proceeds = qty * current;
+  paper.cash = Number(paper.cash || 0) + proceeds;
+  holding.qty = Number(holding.qty || 0) - qty;
+  holding.lastPrice = current;
+  paper.trades.unshift({ side: "SELL", code, name: holding.name, qty, price: current, amount: proceeds, time: Date.now() });
+  if (holding.qty <= 0) delete paper.holdings[code];
+  else paper.holdings[code] = holding;
+  savePaper(paper);
+  renderPaper();
 }
 function cls(v) { return Number(v || 0) >= 0 ? "pos" : "neg"; }
 function pct(v) {
@@ -236,12 +368,13 @@ function render(data) {
       <div class="stock-head" onclick="this.closest('.stock').classList.toggle('open')">
         <div>
           <h3>${item.rank}. ${esc(item.name)}</h3>
-          <div class="sub">${esc(item.code)} · ${esc(item.sector)} · ${esc(item.theme)}</div>
+          <div class="sub">${esc(item.code)} · ${esc(item.sector)} · ${esc(item.theme)} · 현재 ${price(item.close)}</div>
           ${(item.tags || []).map(t => `<span class="tag">${esc(t)}</span>`).join("")}
         </div>
         <div class="score">${Number(item.discoveryScore || 0).toFixed(1)}<span class="trade-pill ${tradeClass(item.tradeAction)}">${esc(item.tradeAction || "보류")}</span></div>
       </div>
       <div class="flow">
+        <div><span>현가격</span><b>${price(item.close)}</b></div>
         <div><span>매매 타이밍</span><b class="trade-text ${tradeClass(item.tradeAction)}">${esc(item.tradeAction || "보류")}</b></div>
         <div><span>등락률</span><b class="${cls(item.changeRate)}">${pct(item.changeRate)}</b></div>
         <div><span>수급집중</span><b>${(Number(item.flowRatio || 0) * 100).toFixed(1)}%</b></div>
@@ -250,6 +383,18 @@ function render(data) {
       <div class="detail">
         ${chart(item.chart, item)}
         <ul><li>타이밍: ${esc(item.tradeAction || "보류")} · ${esc(item.tradeReason || "")}</li></ul>
+        <div class="paper-trade">
+          <b>폰 모의투자 · 현가격 ${price(item.close)}</b>
+          <div class="trade-form">
+            <input id="mbuy-${item.code}" type="number" min="10000" step="10000" value="1000000">
+            <button class="mini" onclick="event.stopPropagation(); mobileBuy('${item.code}')">매수</button>
+          </div>
+          <div class="trade-form">
+            <input id="msell-${item.code}" type="number" min="1" step="1" placeholder="매도 수량">
+            <button class="mini sell" onclick="event.stopPropagation(); mobileSell('${item.code}', false)">매도</button>
+          </div>
+          <button class="mini sell" onclick="event.stopPropagation(); mobileSell('${item.code}', true)">전량 매도</button>
+        </div>
         <div class="flow">
           <div><span>외국인</span><b>${money(item.foreign)}</b></div>
           <div><span>기관</span><b>${money(item.institution)}</b></div>
@@ -260,8 +405,10 @@ function render(data) {
       </div>
     </article>
   `).join("") || `<div class="empty">분석 결과 없음</div>`;
+  renderPaper();
 }
 document.querySelector("#refresh").addEventListener("click", () => loadData().catch(err => alert(err.message)));
+document.querySelector("#mp-reset").addEventListener("click", resetPaper);
 document.querySelector("#runAction").addEventListener("click", () => {
   window.open(actionsUrl(), "_blank", "noopener");
 });

@@ -7,6 +7,7 @@ import threading
 import time
 import urllib.parse
 import webbrowser
+from datetime import timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from config import DATA_DIR
@@ -16,9 +17,50 @@ from global_signals import fetch_global_signals, load_global_signals
 from kis_client import KisApiError, KisClient, save_json
 from kis_supply import aggregate_supply_rows, load_market_csv_rows, market_rows_from_price_payload, market_rows_from_supply_rows, market_rows_from_volume_rank, merge_market_rows, normalize_live_rows, save_market_csv, save_supply_csv
 from krx_downloader import fetch_krx_bundle
+from paper_trading import DEFAULT_CASH, buy as paper_buy, evaluate as evaluate_paper, load_portfolio, new_portfolio, save_portfolio, sell as paper_sell
 from price_normalizer import normalize_snapshots_to_history
 from professional_analysis import build_professional_view
 from scoring import ForceTracker
+
+
+PAPER_PORTFOLIO_PATH = DATA_DIR / "paper_portfolio.json"
+
+
+def synthetic_chart_points(item, count: int = 36) -> list[dict[str, float | str]]:
+    seed = sum(ord(ch) for ch in item.code)
+    start = item.prev_close if item.prev_close > 0 else item.close / (1 + item.change_rate / 100.0) if item.change_rate > -99 else item.close
+    end = item.close
+    span = end - start
+    amplitude = max(abs(span) * 0.28, end * min(0.08, max(0.018, abs(item.change_rate) / 100.0)))
+    volume_base = item.volume if item.volume > 0 else 1.0
+    points: list[dict[str, float | str]] = []
+    for idx in range(count):
+        t = idx / max(1, count - 1)
+        wave = (((seed + idx * 17) % 11) - 5) / 5.0
+        close = start + span * t + wave * amplitude * (0.35 + 0.65 * t)
+        if idx == count - 1:
+            close = end
+        prev = points[-1]["close"] if points else start
+        open_price = float(prev)
+        high = max(open_price, close) * (1 + 0.004 + ((seed + idx) % 4) * 0.002)
+        low = min(open_price, close) * (1 - 0.004 - ((seed + idx * 3) % 4) * 0.002)
+        if idx == count - 1:
+            open_price = item.open if item.open > 0 else open_price
+            high = max(item.high, open_price, close) if item.high > 0 else high
+            low = min(item.low, open_price, close) if item.low > 0 else low
+        trade_date = item.trade_date - timedelta(days=count - idx - 1)
+        points.append(
+            {
+                "date": trade_date.isoformat(),
+                "open": round(open_price, 2),
+                "high": round(high, 2),
+                "low": round(low, 2),
+                "close": round(close, 2),
+                "volume": round(volume_base * (0.55 + 0.45 * t + abs(wave) * 0.18)),
+                "synthetic": True,
+            }
+        )
+    return points
 
 
 def chart_points(item, history) -> list[dict[str, float | str]]:
@@ -34,8 +76,8 @@ def chart_points(item, history) -> list[dict[str, float | str]]:
         }
         for bar in bars
     ]
-    if not points:
-        points.append({"date": "전일", "open": item.prev_close, "high": item.prev_close, "low": item.prev_close, "close": item.prev_close, "volume": 0.0})
+    if len(points) < 5:
+        return synthetic_chart_points(item)
     if points[-1]["date"] != item.trade_date.isoformat():
         points.append({"date": item.trade_date.isoformat(), "open": item.open, "high": item.high, "low": item.low, "close": item.close, "volume": item.volume})
     return points[-120:]
@@ -144,6 +186,15 @@ def analyze_payload() -> dict[str, object]:
     }
 
 
+def current_quote_map() -> dict[str, dict[str, object]]:
+    payload = analyze_payload()
+    return {str(item.get("code", "")).zfill(6): item for item in payload.get("items", [])}
+
+
+def paper_payload() -> dict[str, object]:
+    return evaluate_paper(load_portfolio(PAPER_PORTFOLIO_PATH), current_quote_map())
+
+
 def with_kis_retry(call, retries: int = 4):
     for attempt in range(retries + 1):
         try:
@@ -207,6 +258,22 @@ button.live-on { background: #dc2626; }
 .signal strong { font-size:13px; }
 .signal .pos { color: var(--red); font-weight:800; }
 .signal .neg { color: var(--blue); font-weight:800; }
+.paper-panel { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 14px; margin-bottom: 16px; }
+.paper-head { display:flex; justify-content:space-between; align-items:center; gap:12px; margin-bottom:12px; }
+.paper-head h2 { margin:0; font-size:16px; }
+.paper-controls { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+input { border:1px solid var(--line); border-radius:8px; padding:9px 10px; font:inherit; min-width:110px; }
+.mini-btn { padding:7px 10px; border-radius:8px; font-size:12px; }
+.mini-btn.sell { background: var(--red); }
+.paper-grid { display:grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap:10px; margin-bottom:12px; }
+.paper-metric { border:1px solid var(--line); border-radius:8px; padding:10px; background:#f8fafc; }
+.paper-metric span { display:block; color:var(--muted); font-size:11px; }
+.paper-metric b { display:block; margin-top:4px; font-size:16px; }
+.paper-body { display:grid; grid-template-columns: 1.25fr .75fr; gap:12px; }
+.paper-table { width:100%; border:1px solid var(--line); border-radius:8px; overflow:hidden; }
+.paper-table h3 { margin:0; padding:9px 10px; font-size:13px; background:#edf2f7; border-bottom:1px solid var(--line); }
+.paper-table table { font-size:12px; }
+.paper-empty { padding:18px 10px; color:var(--muted); font-size:12px; text-align:center; }
 .table { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
 table { width: 100%; border-collapse: collapse; font-size: 14px; }
 th, td { padding: 11px 12px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
@@ -259,8 +326,11 @@ tr.stock-row:hover { background: #f8fafc; }
 .pro-box { border: 1px solid var(--line); border-radius: 8px; padding: 12px; background: #fbfdff; }
 .pro-box h3 { margin: 0 0 8px; font-size: 14px; }
 .pro-note { padding: 0 22px 14px; color: #64748b; font-size: 12px; line-height: 1.45; }
+.paper-trade { margin: 10px 22px 0; border:1px solid var(--line); border-radius:8px; padding:12px; background:#f8fafc; display:flex; justify-content:space-between; gap:12px; align-items:center; flex-wrap:wrap; }
+.paper-trade b { display:block; margin-bottom:4px; }
+.paper-trade-actions { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
 @media (max-width: 860px) {
-  .grid, .detail-grid, .detail-body, .insight-grid, .sector-strip, .signal-list, .pro-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .grid, .detail-grid, .detail-body, .insight-grid, .sector-strip, .signal-list, .pro-strip, .paper-grid, .paper-body { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .bottom-list { grid-template-columns: 1fr; }
   table { font-size: 12px; }
   th:nth-child(7), td:nth-child(7), th:nth-child(8), td:nth-child(8) { display: none; }
@@ -288,6 +358,36 @@ tr.stock-row:hover { background: #f8fafc; }
     <div class="metric">수급 집중<b id="m-flow">-</b></div>
     <div class="metric">실전 후보<b id="m-pro">-</b></div>
     <div class="metric">위험 표시<b id="m-risk">-</b></div>
+  </section>
+  <section class="paper-panel">
+    <div class="paper-head">
+      <div>
+        <h2>맥 모의투자 계좌</h2>
+        <div class="note">가상머니로 앱 신호를 검증합니다. 데이터는 이 Mac의 로컬 파일에만 저장됩니다.</div>
+      </div>
+      <div class="paper-controls">
+        <input id="paperInitialCash" type="number" min="100000" step="100000" value="10000000">
+        <button class="mini-btn" id="paperReset">예수금 재설정</button>
+        <button class="mini-btn" id="paperRefresh">계좌 새로고침</button>
+      </div>
+    </div>
+    <div class="paper-grid">
+      <div class="paper-metric"><span>총자산</span><b id="p-equity">-</b></div>
+      <div class="paper-metric"><span>예수금</span><b id="p-cash">-</b></div>
+      <div class="paper-metric"><span>평가손익</span><b id="p-unreal">-</b></div>
+      <div class="paper-metric"><span>총수익률</span><b id="p-return">-</b></div>
+      <div class="paper-metric"><span>매도 승률</span><b id="p-win">-</b></div>
+    </div>
+    <div class="paper-body">
+      <div class="paper-table">
+        <h3>보유 종목</h3>
+        <div id="paperHoldings" class="paper-empty">보유 종목 없음</div>
+      </div>
+      <div class="paper-table">
+        <h3>최근 거래</h3>
+        <div id="paperTrades" class="paper-empty">거래 내역 없음</div>
+      </div>
+    </div>
   </section>
   <section class="bottom-alert" id="bottomAlert">
     <h2>바닥매집 알림</h2>
@@ -324,6 +424,7 @@ tr.stock-row:hover { background: #f8fafc; }
     <div class="detail-grid">
       <div class="detail-card"><span>추천</span><b id="d-rec">-</b></div>
       <div class="detail-card"><span>매매 타이밍</span><b id="d-action">-</b></div>
+      <div class="detail-card"><span>현가격</span><b id="d-price">-</b></div>
       <div class="detail-card"><span>발굴 점수</span><b id="d-score">-</b></div>
       <div class="detail-card"><span>위험</span><b id="d-risk">-</b></div>
       <div class="detail-card"><span>거래량</span><b id="d-vol">-</b></div>
@@ -334,6 +435,19 @@ tr.stock-row:hover { background: #f8fafc; }
       <div class="detail-card"><span>바닥매집</span><b id="d-bottom">-</b></div>
     </div>
     <div class="chart-wrap"><div class="big-chart" id="d-chart"></div></div>
+    <div class="paper-trade">
+      <div>
+        <b>모의투자 주문</b>
+        <span class="note" id="d-paper-status">현시세 기준으로 가상 체결합니다.</span>
+      </div>
+      <div class="paper-trade-actions">
+        <input id="d-paper-amount" type="number" min="10000" step="10000" value="1000000" title="매수 금액">
+        <button class="mini-btn" id="d-paper-buy">현시세 매수</button>
+        <input id="d-paper-qty" type="number" min="1" step="1" placeholder="수량" title="매도 수량">
+        <button class="mini-btn sell" id="d-paper-sell">수량 매도</button>
+        <button class="mini-btn sell" id="d-paper-sell-all">전량 매도</button>
+      </div>
+    </div>
     <div class="pro-strip" id="d-pro-strip"></div>
     <div class="pro-note">이 화면은 투자 판단 보조도구입니다. 실제 주문 전에는 호가, 공시, 뉴스, 시장 급변, 본인 손절 기준을 반드시 다시 확인하세요.</div>
     <div class="detail-body">
@@ -347,6 +461,8 @@ tr.stock-row:hover { background: #f8fafc; }
 <script>
 const fmt = new Intl.NumberFormat("ko-KR");
 let currentItems = [];
+let currentDetailCode = "";
+let paperState = null;
 let liveTimer = null;
 let liveRunning = false;
 let lastDataLabel = "";
@@ -357,6 +473,17 @@ function money(v) {
   if (Math.abs(n) >= 100000000) return `${fmt.format(Math.round(n / 100000000))}억`;
   if (Math.abs(n) >= 10000) return `${fmt.format(Math.round(n / 10000))}만`;
   return fmt.format(Math.round(n));
+}
+function signedMoney(v) {
+  const n = Number(v || 0);
+  const cls = n >= 0 ? "up" : "down";
+  const sign = n >= 0 ? "+" : "-";
+  return `<span class="${cls}">${sign}${money(Math.abs(n))}</span>`;
+}
+function signedPct(v) {
+  const n = Number(v || 0);
+  const cls = n >= 0 ? "up" : "down";
+  return `<span class="${cls}">${n >= 0 ? "+" : ""}${n.toFixed(2)}%</span>`;
 }
 function flow(v, available) {
   if (!available) return `<span class="flow none">데이터 없음</span>`;
@@ -372,6 +499,11 @@ function rate(v) {
 function price(v) {
   const n = Number(v || 0);
   return n ? `${fmt.format(Math.round(n))}원` : "-";
+}
+function timeText(ts) {
+  const n = Number(ts || 0);
+  if (!n) return "-";
+  return new Date(n * 1000).toLocaleString("ko-KR", { month:"2-digit", day:"2-digit", hour:"2-digit", minute:"2-digit" });
 }
 function recClass(label) {
   if (label === "강한매수") return "rec-strong";
@@ -540,6 +672,76 @@ function detailedChart(points, item = {}, width = 1040, height = 360) {
 function esc(text) {
   return String(text || "").replace(/[&<>"']/g, s => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#039;" }[s]));
 }
+async function loadPaper() {
+  const res = await fetch(`/api/paper?t=${Date.now()}`);
+  const data = await res.json();
+  if (!data.ok) throw new Error(data.error || "모의투자 계좌 조회 실패");
+  paperState = data.portfolio;
+  renderPaper(paperState);
+}
+function renderPaper(paper) {
+  document.querySelector("#p-equity").innerHTML = price(paper.totalEquity);
+  document.querySelector("#p-cash").innerHTML = price(paper.cash);
+  document.querySelector("#p-unreal").innerHTML = signedMoney(paper.unrealizedPnl);
+  document.querySelector("#p-return").innerHTML = signedPct(paper.returnPct);
+  document.querySelector("#p-win").textContent = paper.closedTrades ? `${Number(paper.winRate || 0).toFixed(1)}%` : "-";
+  const holdings = paper.holdings || [];
+  document.querySelector("#paperHoldings").className = holdings.length ? "" : "paper-empty";
+  document.querySelector("#paperHoldings").innerHTML = holdings.length ? `
+    <table><thead><tr><th>종목</th><th>수량</th><th>평단</th><th>현재</th><th>손익</th><th>현재신호</th><th></th></tr></thead>
+    <tbody>${holdings.map(item => `
+      <tr>
+        <td><b>${esc(item.name)}</b><br><span class="note">${esc(item.code)} · ${esc(item.setup || "")}</span></td>
+        <td>${fmt.format(item.qty || 0)}</td>
+        <td>${price(item.avg_price)}</td>
+        <td>${price(item.current_price)}</td>
+        <td>${signedMoney(item.pnl)}<br>${signedPct(item.pnl_pct)}</td>
+        <td>${esc(item.current_signal || "-")}<br><span class="note">${esc(item.current_setup || "")}</span></td>
+        <td><button class="mini-btn sell" onclick="event.stopPropagation(); paperSell('${esc(item.code)}', 0, true)">전량</button></td>
+      </tr>
+    `).join("")}</tbody></table>
+  ` : "보유 종목 없음";
+  const trades = paper.trades || [];
+  document.querySelector("#paperTrades").className = trades.length ? "" : "paper-empty";
+  document.querySelector("#paperTrades").innerHTML = trades.length ? `
+    <table><thead><tr><th>시간</th><th>구분</th><th>종목</th><th>금액</th><th>손익</th></tr></thead>
+    <tbody>${trades.slice(0, 10).map(trade => `
+      <tr>
+        <td>${timeText(trade.time)}</td>
+        <td><b class="${trade.side === "BUY" ? "up" : "down"}">${trade.side === "BUY" ? "매수" : "매도"}</b></td>
+        <td>${esc(trade.name)}<br><span class="note">${esc(trade.signal || "")}</span></td>
+        <td>${fmt.format(trade.qty || 0)}주<br>${price(trade.amount)}</td>
+        <td>${trade.side === "SELL" ? `${signedMoney(trade.pnl)}<br>${signedPct(trade.pnl_pct)}` : "-"}</td>
+      </tr>
+    `).join("")}</tbody></table>
+  ` : "거래 내역 없음";
+}
+async function paperCall(path) {
+  const res = await fetch(path);
+  const data = await res.json();
+  if (!data.ok) throw new Error(data.error || "모의투자 처리 실패");
+  paperState = data.portfolio;
+  renderPaper(paperState);
+  return data;
+}
+async function paperReset() {
+  const cash = Number(document.querySelector("#paperInitialCash").value || 10000000);
+  if (!confirm(`${fmt.format(cash)}원으로 모의투자 계좌를 새로 시작할까요? 기존 거래내역은 초기화됩니다.`)) return;
+  await paperCall(`/api/paper-reset?cash=${encodeURIComponent(cash)}`);
+}
+async function paperBuy(code, amount) {
+  const data = await paperCall(`/api/paper-buy?code=${encodeURIComponent(code)}&amount=${encodeURIComponent(amount)}`);
+  document.querySelector("#d-paper-status").textContent = "모의매수 완료";
+  return data;
+}
+async function paperSell(code, qty = 0, sellAll = false) {
+  const url = sellAll
+    ? `/api/paper-sell?code=${encodeURIComponent(code)}&all=1`
+    : `/api/paper-sell?code=${encodeURIComponent(code)}&qty=${encodeURIComponent(qty)}`;
+  const data = await paperCall(url);
+  document.querySelector("#d-paper-status").textContent = "모의매도 완료";
+  return data;
+}
 async function load() {
   const res = await fetch("/api/analyze");
   const data = await res.json();
@@ -582,7 +784,7 @@ async function load() {
       <td><span class="action ${actionClass(item.tradeAction)}">${item.tradeAction || "보류"}</span><br><span class="note">${esc(item.tradeReason || "")}</span></td>
       <td><b>${esc(item.pro?.bias || "-")}</b><br><span class="note">${esc(item.pro?.setup || "")}</span></td>
       <td class="score">${Number(item.discoveryScore).toFixed(1)}<br><span class="note">기본 ${Number(item.score).toFixed(1)}</span></td>
-      <td>${rate(item.changeRate)}<br><span class="note">${fmt.format(item.close)}원</span></td>
+      <td><b>${price(item.close)}</b><br>${rate(item.changeRate)}</td>
       <td onclick="event.stopPropagation(); openDetail('${item.code}')">${sparkline(item.chart)}</td>
       <td><b>${(Number(item.flowRatio || 0) * 100).toFixed(1)}%</b><br><span class="note">외 ${flow(item.foreign, item.foreignAvailable)} / 기 ${flow(item.institution, item.institutionAvailable)}</span></td>
       <td>${Number(item.usImpact || 0) >= 0 ? "+" : ""}${Number(item.usImpact || 0).toFixed(1)}</td>
@@ -597,6 +799,10 @@ async function load() {
       setTimeout(() => openDetail(first.code), 250);
     }
   }
+  loadPaper().catch(err => {
+    document.querySelector("#paperHoldings").className = "paper-empty";
+    document.querySelector("#paperHoldings").textContent = err.message;
+  });
 }
 function setLiveStatus(text) {
   const dot = document.querySelector("#liveDot");
@@ -636,12 +842,14 @@ function stopLive() {
 function openDetail(code) {
   const item = currentItems.find(x => x.code === code);
   if (!item) return;
+  currentDetailCode = code;
   const pro = item.pro || {};
   const indicators = pro.indicators || {};
   document.querySelector("#d-title").textContent = `${item.name} (${item.code})`;
   document.querySelector("#d-sub").textContent = `${item.market} · ${item.tags.join(" · ") || "신호 없음"} · ${pro.bias || "전문가판 대기"}`;
   document.querySelector("#d-rec").innerHTML = `<span class="rec ${recClass(item.recommendation)}">${item.recommendation}</span>`;
   document.querySelector("#d-action").innerHTML = `<span class="action ${actionClass(item.tradeAction)}">${item.tradeAction || "보류"}</span><br><span class="note">${esc(item.tradeReason || "")}</span>`;
+  document.querySelector("#d-price").textContent = price(item.close);
   document.querySelector("#d-score").textContent = `${Number(item.discoveryScore).toFixed(1)}점`;
   document.querySelector("#d-risk").textContent = item.risk;
   document.querySelector("#d-vol").textContent = `${item.volumeRatio.toFixed(1)}배`;
@@ -650,6 +858,8 @@ function openDetail(code) {
   document.querySelector("#d-flow").textContent = `${(Number(item.flowRatio || 0) * 100).toFixed(1)}%`;
   document.querySelector("#d-us").textContent = `${Number(item.usImpact || 0) >= 0 ? "+" : ""}${Number(item.usImpact || 0).toFixed(1)}`;
   document.querySelector("#d-bottom").textContent = item.bottomScore >= 45 ? `${Number(item.bottomScore).toFixed(1)}점` : "해당 없음";
+  document.querySelector("#d-paper-status").textContent = `${price(item.close)} 현시세 기준 가상 체결`;
+  document.querySelector("#d-paper-qty").value = "";
   document.querySelector("#d-chart").innerHTML = detailedChart(item.chart, item);
   document.querySelector("#d-pro-strip").innerHTML = [
     ["셋업", pro.setup || "-", pro.bias === "공격매수 후보" || pro.bias === "분할매수 후보" ? "positive" : ""],
@@ -679,6 +889,22 @@ document.querySelector("#detailModal").addEventListener("click", event => {
   if (event.target.id === "detailModal") document.querySelector("#detailModal").classList.remove("open");
 });
 document.querySelector("#refresh").addEventListener("click", load);
+document.querySelector("#paperRefresh").addEventListener("click", () => loadPaper().catch(err => alert(err.message)));
+document.querySelector("#paperReset").addEventListener("click", () => paperReset().catch(err => alert(err.message)));
+document.querySelector("#d-paper-buy").addEventListener("click", () => {
+  const amount = Number(document.querySelector("#d-paper-amount").value || 0);
+  if (!currentDetailCode) return;
+  paperBuy(currentDetailCode, amount).catch(err => alert(err.message));
+});
+document.querySelector("#d-paper-sell").addEventListener("click", () => {
+  const qty = Number(document.querySelector("#d-paper-qty").value || 0);
+  if (!currentDetailCode) return;
+  paperSell(currentDetailCode, qty, false).catch(err => alert(err.message));
+});
+document.querySelector("#d-paper-sell-all").addEventListener("click", () => {
+  if (!currentDetailCode) return;
+  paperSell(currentDetailCode, 0, true).catch(err => alert(err.message));
+});
 document.querySelector("#liveToggle").addEventListener("click", () => {
   if (liveRunning) stopLive();
   else startLive();
@@ -758,6 +984,41 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Length", str(len(payload)))
             self.end_headers()
             self.wfile.write(payload)
+            return
+        if self.path.startswith("/api/paper"):
+            try:
+                parsed = urllib.parse.urlparse(self.path)
+                query = urllib.parse.parse_qs(parsed.query)
+                quotes = current_quote_map()
+                portfolio = load_portfolio(PAPER_PORTFOLIO_PATH)
+                if parsed.path == "/api/paper-reset":
+                    cash = int(float(query.get("cash", [DEFAULT_CASH])[0] or DEFAULT_CASH))
+                    portfolio = new_portfolio(cash)
+                    save_portfolio(PAPER_PORTFOLIO_PATH, portfolio)
+                elif parsed.path == "/api/paper-buy":
+                    code = str(query.get("code", [""])[0]).zfill(6)
+                    amount = float(query.get("amount", [0])[0] or 0)
+                    if code not in quotes:
+                        raise RuntimeError("현재 앱 분석 목록에 있는 종목만 매수할 수 있습니다.")
+                    portfolio = paper_buy(portfolio, quotes[code], amount)
+                    save_portfolio(PAPER_PORTFOLIO_PATH, portfolio)
+                elif parsed.path == "/api/paper-sell":
+                    code = str(query.get("code", [""])[0]).zfill(6)
+                    qty_text = query.get("qty", [""])[0]
+                    sell_all = query.get("all", ["0"])[0] == "1"
+                    if code not in quotes:
+                        raise RuntimeError("현재 앱 분석 목록에 있는 종목만 매도 평가할 수 있습니다.")
+                    portfolio = paper_sell(portfolio, quotes[code], int(qty_text) if qty_text else None, sell_all=sell_all)
+                    save_portfolio(PAPER_PORTFOLIO_PATH, portfolio)
+                payload = {"ok": True, "portfolio": evaluate_paper(portfolio, quotes)}
+            except Exception as error:
+                payload = {"ok": False, "error": str(error)}
+            body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+            self.send_response(200 if payload["ok"] else 500)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
             return
         if self.path.startswith("/api/fetch-krx"):
             try:

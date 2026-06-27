@@ -8,4 +8,5 @@ data/global_signals.json
 data/kis_market.csv
 data/kis_raw/
 data/krx/kis_*.csv
+data/paper_portfolio.json
 docs/data.json
