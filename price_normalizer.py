@@ -5,7 +5,7 @@ from dataclasses import replace
 from models import HistoryBar, StockSnapshot
 
 
-def _price_factor(current: float, reference: float) -> float:
+def price_unit_factor(current: float, reference: float) -> float:
     if current <= 0 or reference <= 0:
         return 1.0
     ratio = current / reference
@@ -24,27 +24,31 @@ def normalize_snapshots_to_history(
     snapshots: list[StockSnapshot],
     history: dict[str, list[HistoryBar]],
 ) -> list[StockSnapshot]:
-    normalized: list[StockSnapshot] = []
-    for item in snapshots:
-        bars = history.get(item.code, [])
+    return list(snapshots)
+
+
+def normalize_history_to_snapshots(
+    snapshots: list[StockSnapshot],
+    history: dict[str, list[HistoryBar]],
+) -> dict[str, list[HistoryBar]]:
+    snapshot_by_code = {item.code: item for item in snapshots}
+    normalized: dict[str, list[HistoryBar]] = {}
+    for code, bars in history.items():
+        item = snapshot_by_code.get(code)
         reference = bars[-1].close if bars else 0.0
-        factor = _price_factor(item.close, reference)
+        factor = price_unit_factor(item.close if item else 0.0, reference)
         if factor == 1.0:
-            normalized.append(item)
+            normalized[code] = list(bars)
             continue
-        normalized.append(
+        normalized[code] = [
             replace(
-                item,
-                open=item.open / factor,
-                high=item.high / factor,
-                low=item.low / factor,
-                close=item.close / factor,
-                prev_close=item.prev_close / factor,
-                trading_value=item.trading_value / factor,
-                foreign_net_value=item.foreign_net_value / factor,
-                institution_net_value=item.institution_net_value / factor,
-                individual_net_value=item.individual_net_value / factor,
-                short_sale_value=item.short_sale_value / factor,
+                bar,
+                open=bar.open * factor,
+                high=bar.high * factor,
+                low=bar.low * factor,
+                close=bar.close * factor,
+                trading_value=bar.trading_value * factor,
             )
-        )
+            for bar in bars
+        ]
     return normalized

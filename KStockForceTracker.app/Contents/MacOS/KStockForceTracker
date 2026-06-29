@@ -9,9 +9,9 @@ LOG_DIR="$HOME/Library/Logs"
 PORT="8777"
 URL="http://127.0.0.1:${PORT}/"
 mkdir -p "$LOG_DIR"
-if /usr/bin/curl -fsS "$URL" >/dev/null 2>&1; then
-  /usr/bin/open "$URL"
-  exit 0
-fi
+for pid in $(/usr/sbin/lsof -tiTCP:"$PORT" -sTCP:LISTEN 2>/dev/null); do
+  /bin/kill "$pid" >/dev/null 2>&1 || true
+done
+/bin/sleep 0.5
 cd "$APP_ROOT"
 exec /usr/bin/python3 stock_force_tracker.py serve --port "$PORT" >> "$LOG_DIR/KStockForceTracker.log" 2>&1

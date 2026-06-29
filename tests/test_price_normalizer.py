@@ -4,11 +4,11 @@ import unittest
 from datetime import date
 
 from models import HistoryBar, StockSnapshot
-from price_normalizer import normalize_snapshots_to_history
+from price_normalizer import normalize_history_to_snapshots, normalize_snapshots_to_history
 
 
 class PriceNormalizerTest(unittest.TestCase):
-    def test_normalizes_kis_tenfold_price_against_history(self) -> None:
+    def test_keeps_kis_quote_and_scales_history_to_quote_unit(self) -> None:
         snapshot = StockSnapshot(
             code="005930",
             name="삼성전자",
@@ -41,10 +41,13 @@ class PriceNormalizerTest(unittest.TestCase):
         }
 
         [item] = normalize_snapshots_to_history([snapshot], history)
+        normalized_history = normalize_history_to_snapshots([snapshot], history)
 
-        self.assertEqual(item.close, 36_250)
-        self.assertEqual(item.trading_value, 36_250_000_000)
-        self.assertEqual(item.foreign_net_value, 8_800_000_000)
+        self.assertEqual(item.close, 362_500)
+        self.assertEqual(item.trading_value, 362_500_000_000)
+        self.assertEqual(item.foreign_net_value, 88_000_000_000)
+        self.assertEqual(normalized_history["005930"][-1].close, 360_000)
+        self.assertEqual(normalized_history["005930"][-1].trading_value, 360_000_000_000)
 
 
 if __name__ == "__main__":

@@ -18,7 +18,7 @@ from kis_client import KisApiError, KisClient, save_json
 from kis_supply import aggregate_supply_rows, load_market_csv_rows, market_rows_from_price_payload, market_rows_from_supply_rows, market_rows_from_volume_rank, merge_market_rows, normalize_live_rows, save_market_csv, save_supply_csv
 from krx_downloader import fetch_krx_bundle
 from paper_trading import DEFAULT_CASH, buy as paper_buy, evaluate as evaluate_paper, load_portfolio, new_portfolio, save_portfolio, sell as paper_sell
-from price_normalizer import normalize_snapshots_to_history
+from price_normalizer import normalize_history_to_snapshots, price_unit_factor
 from professional_analysis import build_professional_view
 from scoring import ForceTracker
 
@@ -27,23 +27,21 @@ PAPER_PORTFOLIO_PATH = DATA_DIR / "paper_portfolio.json"
 
 
 def synthetic_chart_points(item, count: int = 36) -> list[dict[str, float | str]]:
-    seed = sum(ord(ch) for ch in item.code)
     start = item.prev_close if item.prev_close > 0 else item.close / (1 + item.change_rate / 100.0) if item.change_rate > -99 else item.close
     end = item.close
     span = end - start
-    amplitude = max(abs(span) * 0.28, end * min(0.08, max(0.018, abs(item.change_rate) / 100.0)))
     volume_base = item.volume if item.volume > 0 else 1.0
     points: list[dict[str, float | str]] = []
     for idx in range(count):
         t = idx / max(1, count - 1)
-        wave = (((seed + idx * 17) % 11) - 5) / 5.0
-        close = start + span * t + wave * amplitude * (0.35 + 0.65 * t)
+        smooth_t = t * t * (3 - 2 * t)
+        close = start + span * smooth_t
         if idx == count - 1:
             close = end
-        prev = points[-1]["close"] if points else start
-        open_price = float(prev)
-        high = max(open_price, close) * (1 + 0.004 + ((seed + idx) % 4) * 0.002)
-        low = min(open_price, close) * (1 - 0.004 - ((seed + idx * 3) % 4) * 0.002)
+        open_price = float(points[-1]["close"] if points else start)
+        wick = max(abs(close - open_price) * 0.32, end * 0.004)
+        high = max(open_price, close) + wick
+        low = max(0.0, min(open_price, close) - wick)
         if idx == count - 1:
             open_price = item.open if item.open > 0 else open_price
             high = max(item.high, open_price, close) if item.high > 0 else high
@@ -56,7 +54,7 @@ def synthetic_chart_points(item, count: int = 36) -> list[dict[str, float | str]
                 "high": round(high, 2),
                 "low": round(low, 2),
                 "close": round(close, 2),
-                "volume": round(volume_base * (0.55 + 0.45 * t + abs(wave) * 0.18)),
+                "volume": round(volume_base * (0.62 + 0.38 * t)),
                 "synthetic": True,
             }
         )
@@ -88,8 +86,12 @@ def analyze_payload() -> dict[str, object]:
     investor_paths = discover_investor_csvs(DATA_DIR)
     snapshots = load_market_snapshots(market_csv)
     snapshots = merge_krx_investor_csvs(snapshots, investor_paths) if investor_paths else snapshots
-    history = load_history_dir(DATA_DIR / "history")
-    snapshots = normalize_snapshots_to_history(snapshots, history)
+    raw_history = load_history_dir(DATA_DIR / "history")
+    history_scale_by_code = {
+        item.code: price_unit_factor(item.close, raw_history.get(item.code, [])[-1].close if raw_history.get(item.code) else 0.0)
+        for item in snapshots
+    }
+    history = normalize_history_to_snapshots(snapshots, raw_history)
     signal_payload = load_global_signals()
     signals = signal_payload.get("signals", {})
     all_results = ForceTracker(snapshots, history, signals).score_all(limit=max(40, len(snapshots)))
@@ -133,6 +135,7 @@ def analyze_payload() -> dict[str, object]:
                 "reasons": item.bottom_reasons,
                 "warnings": item.bottom_warnings,
                 "discoveryScore": item.discovery_score,
+                "historyScale": history_scale_by_code.get(item.code, 1.0),
                 "chart": chart_points(snapshots_by_code[item.code], history) if item.code in snapshots_by_code else [],
             }
             for item in bottom_results
@@ -171,6 +174,7 @@ def analyze_payload() -> dict[str, object]:
                 "bottomTouchCount": item.bottom_touch_count,
                 "bottomReasons": item.bottom_reasons,
                 "bottomWarnings": item.bottom_warnings,
+                "historyScale": history_scale_by_code.get(item.code, 1.0),
                 "foreign": item.foreign_net_value,
                 "institution": item.institution_net_value,
                 "foreignAvailable": item.foreign_net_available,
@@ -433,6 +437,7 @@ tr.stock-row:hover { background: #f8fafc; }
       <div class="detail-card"><span>수급 집중</span><b id="d-flow">-</b></div>
       <div class="detail-card"><span>미국 영향</span><b id="d-us">-</b></div>
       <div class="detail-card"><span>바닥매집</span><b id="d-bottom">-</b></div>
+      <div class="detail-card"><span>차트단위</span><b id="d-price-scale">-</b></div>
     </div>
     <div class="chart-wrap"><div class="big-chart" id="d-chart"></div></div>
     <div class="paper-trade">
@@ -858,6 +863,7 @@ function openDetail(code) {
   document.querySelector("#d-flow").textContent = `${(Number(item.flowRatio || 0) * 100).toFixed(1)}%`;
   document.querySelector("#d-us").textContent = `${Number(item.usImpact || 0) >= 0 ? "+" : ""}${Number(item.usImpact || 0).toFixed(1)}`;
   document.querySelector("#d-bottom").textContent = item.bottomScore >= 45 ? `${Number(item.bottomScore).toFixed(1)}점` : "해당 없음";
+  document.querySelector("#d-price-scale").textContent = Number(item.historyScale || 1) !== 1 ? `차트 ×${Number(item.historyScale).toFixed(0)}` : "원본";
   document.querySelector("#d-paper-status").textContent = `${price(item.close)} 현시세 기준 가상 체결`;
   document.querySelector("#d-paper-qty").value = "";
   document.querySelector("#d-chart").innerHTML = detailedChart(item.chart, item);
