@@ -3,14 +3,17 @@ from __future__ import annotations
 
 import html
 import json
+import os
 import threading
 import time
 import urllib.parse
+import urllib.request
 import webbrowser
-from datetime import timedelta
+from dataclasses import replace
+from datetime import date, datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from config import DATA_DIR
+from config import APP_DIR, DATA_DIR, KisConfig
 from data_loader import discover_investor_csvs, discover_market_csv, load_history_dir, load_market_snapshots, merge_krx_investor_csvs
 from config import get_kis_config
 from global_signals import fetch_global_signals, load_global_signals
@@ -24,6 +27,90 @@ from scoring import ForceTracker
 
 
 PAPER_PORTFOLIO_PATH = DATA_DIR / "paper_portfolio.json"
+PUBLIC_MOBILE_DATA_URL = os.environ.get(
+    "K_STOCK_PUBLIC_DATA_URL",
+    "https://thdndpk-svg.github.io/k-stock-force-tracker/data.json",
+)
+
+
+def _number(value, fallback: float = 0.0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return fallback
+
+
+def _parse_payload_date(payload: dict[str, object]) -> date:
+    generated_at = str(payload.get("generatedAt") or "")
+    if generated_at:
+        try:
+            return datetime.fromisoformat(generated_at).date()
+        except ValueError:
+            pass
+    return date.today()
+
+
+def _load_public_mobile_payload() -> dict[str, object]:
+    request = urllib.request.Request(
+        PUBLIC_MOBILE_DATA_URL,
+        headers={"User-Agent": "KStockForceTracker/1.0"},
+    )
+    with urllib.request.urlopen(request, timeout=6) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+def _apply_public_quote_overrides(
+    snapshots,
+    payload: dict[str, object],
+) -> tuple[list, dict[str, object]]:
+    items = payload.get("items", [])
+    if not isinstance(items, list):
+        return snapshots, {"quoteSource": "로컬 CSV", "quoteUpdatedAt": "", "quoteOverrideCount": 0}
+    quote_by_code = {
+        str(item.get("code", "")).zfill(6): item
+        for item in items
+        if isinstance(item, dict) and str(item.get("code", "")).strip()
+    }
+    payload_date = _parse_payload_date(payload)
+    updated: list = []
+    override_count = 0
+    for snapshot in snapshots:
+        quote = quote_by_code.get(snapshot.code)
+        close = _number(quote.get("close") if quote else None)
+        if not quote or close <= 0:
+            updated.append(snapshot)
+            continue
+        chart = quote.get("chart", [])
+        last_bar = chart[-1] if isinstance(chart, list) and chart and isinstance(chart[-1], dict) else {}
+        chart_date = str(last_bar.get("date") or "")
+        try:
+            trade_date = date.fromisoformat(chart_date)
+        except ValueError:
+            trade_date = payload_date
+        change_rate = _number(quote.get("changeRate"), snapshot.change_rate)
+        prev_close = close / (1.0 + change_rate / 100.0) if change_rate > -99 else snapshot.prev_close
+        volume = _number(last_bar.get("volume"), snapshot.volume)
+        trading_value = _number(quote.get("value"), close * volume)
+        updated.append(
+            replace(
+                snapshot,
+                trade_date=trade_date,
+                close=close,
+                prev_close=prev_close,
+                open=_number(last_bar.get("open"), close),
+                high=_number(last_bar.get("high"), close),
+                low=_number(last_bar.get("low"), close),
+                volume=volume,
+                trading_value=trading_value if trading_value > 0 else close * volume,
+                change_rate=change_rate,
+            )
+        )
+        override_count += 1
+    return updated, {
+        "quoteSource": "KIS 최신(휴대폰 배포)",
+        "quoteUpdatedAt": str(payload.get("generatedAt") or ""),
+        "quoteOverrideCount": override_count,
+    }
 
 
 def synthetic_chart_points(item, count: int = 36) -> list[dict[str, float | str]]:
@@ -81,11 +168,21 @@ def chart_points(item, history) -> list[dict[str, float | str]]:
     return points[-120:]
 
 
-def analyze_payload() -> dict[str, object]:
+def analyze_payload(use_public_fallback: bool = False) -> dict[str, object]:
     market_csv = discover_market_csv(DATA_DIR)
     investor_paths = discover_investor_csvs(DATA_DIR)
     snapshots = load_market_snapshots(market_csv)
     snapshots = merge_krx_investor_csvs(snapshots, investor_paths) if investor_paths else snapshots
+    quote_meta = {"quoteSource": "로컬 CSV", "quoteUpdatedAt": "", "quoteOverrideCount": 0}
+    if use_public_fallback and get_kis_config() is None:
+        try:
+            public_payload = _load_public_mobile_payload()
+            public_date = _parse_payload_date(public_payload)
+            local_date = max((item.trade_date for item in snapshots), default=date.min)
+            if public_date >= local_date:
+                snapshots, quote_meta = _apply_public_quote_overrides(snapshots, public_payload)
+        except Exception as error:
+            quote_meta = {"quoteSource": "로컬 CSV", "quoteUpdatedAt": "", "quoteOverrideCount": 0, "quoteError": str(error)}
     raw_history = load_history_dir(DATA_DIR / "history")
     history_scale_by_code = {
         item.code: price_unit_factor(item.close, raw_history.get(item.code, [])[-1].close if raw_history.get(item.code) else 0.0)
@@ -119,6 +216,10 @@ def analyze_payload() -> dict[str, object]:
         "count": len(results),
         "marketCsv": str(market_csv.name),
         "investorCsv": ", ".join(path.name for path in investor_paths),
+        "quoteSource": quote_meta.get("quoteSource", "로컬 CSV"),
+        "quoteUpdatedAt": quote_meta.get("quoteUpdatedAt", ""),
+        "quoteOverrideCount": quote_meta.get("quoteOverrideCount", 0),
+        "quoteError": quote_meta.get("quoteError", ""),
         "signals": signals,
         "signalUpdatedAt": signal_payload.get("updated_at", 0),
         "bottomCandidates": [
@@ -191,7 +292,7 @@ def analyze_payload() -> dict[str, object]:
 
 
 def current_quote_map() -> dict[str, dict[str, object]]:
-    payload = analyze_payload()
+    payload = analyze_payload(use_public_fallback=True)
     return {str(item.get("code", "")).zfill(6): item for item in payload.get("items", [])}
 
 
@@ -207,6 +308,129 @@ def with_kis_retry(call, retries: int = 4):
             if "EGW00201" not in str(error) or attempt >= retries:
                 raise
             time.sleep(1.2 + attempt * 0.8)
+
+
+ENV_PATH = APP_DIR / ".env"
+KIS_ENV_KEYS = ["KIS_APP_KEY", "KIS_APP_SECRET", "KIS_ACCOUNT_NO", "KIS_PRODUCT_CODE", "KIS_VIRTUAL"]
+
+
+def _read_env_values() -> dict[str, str]:
+    values: dict[str, str] = {}
+    if not ENV_PATH.exists():
+        return values
+    for raw_line in ENV_PATH.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        values[key.strip()] = value.strip().strip('"').strip("'")
+    return values
+
+
+def _write_env_values(updates: dict[str, str]) -> None:
+    values = _read_env_values()
+    for key, value in updates.items():
+        if key in KIS_ENV_KEYS and value is not None:
+            values[key] = str(value).strip()
+    values.setdefault("KIS_PRODUCT_CODE", "01")
+    values.setdefault("KIS_VIRTUAL", "false")
+    ordered_keys = KIS_ENV_KEYS + [key for key in values if key not in KIS_ENV_KEYS]
+    ENV_PATH.write_text("\n".join(f"{key}={values.get(key, '')}" for key in ordered_keys) + "\n", encoding="utf-8")
+    try:
+        ENV_PATH.chmod(0o600)
+    except OSError:
+        pass
+    for key in KIS_ENV_KEYS:
+        os.environ[key] = values.get(key, "")
+
+
+def _mask_secret(value: str) -> str:
+    if not value:
+        return ""
+    if len(value) <= 8:
+        return "*" * len(value)
+    return f"{value[:4]}...{value[-4:]}"
+
+
+def kis_status_payload() -> dict[str, object]:
+    env_values = _read_env_values()
+    config = get_kis_config()
+    return {
+        "ok": True,
+        "configured": config is not None,
+        "appKey": _mask_secret(env_values.get("KIS_APP_KEY", "")),
+        "virtual": config.virtual if config else env_values.get("KIS_VIRTUAL", "false").lower() in {"1", "true", "yes", "y"},
+        "accountNo": _mask_secret(env_values.get("KIS_ACCOUNT_NO", "")),
+        "productCode": env_values.get("KIS_PRODUCT_CODE", "01") or "01",
+        "mode": "모의투자 서버" if config and config.virtual else "실전투자 서버",
+    }
+
+
+def save_kis_settings(payload: dict[str, object]) -> dict[str, object]:
+    app_key = str(payload.get("appKey") or "").strip()
+    app_secret = str(payload.get("appSecret") or "").strip()
+    if not app_key or not app_secret:
+        raise RuntimeError("KIS APP KEY와 APP SECRET을 모두 입력해야 합니다.")
+    account_no = str(payload.get("accountNo") or "").strip()
+    product_code = str(payload.get("productCode") or "01").strip() or "01"
+    virtual = str(payload.get("virtual", "false")).lower() in {"1", "true", "yes", "y"}
+    test_config = KisConfig(app_key=app_key, app_secret=app_secret, account_no=account_no, product_code=product_code, virtual=virtual)
+    test_payload = with_kis_retry(lambda: KisClient(test_config).inquire_price("000660"), retries=1)
+    test_rows = market_rows_from_price_payload(test_payload, fallback_code="000660", fallback_name="SK하이닉스")
+    _write_env_values(
+        {
+            "KIS_APP_KEY": app_key,
+            "KIS_APP_SECRET": app_secret,
+            "KIS_ACCOUNT_NO": account_no,
+            "KIS_PRODUCT_CODE": product_code,
+            "KIS_VIRTUAL": "true" if virtual else "false",
+        }
+    )
+    return kis_status_payload() | {"tested": True, "sampleQuote": test_rows[0] if test_rows else {}}
+
+
+def refresh_kis_quotes(codes: list[str]) -> dict[str, object]:
+    config = get_kis_config()
+    if config is None:
+        raise RuntimeError("KIS APP KEY/SECRET을 먼저 저장해야 합니다.")
+    clean_codes = []
+    for code in codes:
+        clean = str(code or "").strip().zfill(6)
+        if clean.strip("0") and clean not in clean_codes:
+            clean_codes.append(clean)
+    if not clean_codes:
+        current = analyze_payload(use_public_fallback=False)
+        clean_codes = [str(item.get("code", "")).zfill(6) for item in current.get("items", [])[:40]]
+    clean_codes = clean_codes[:60]
+    client = KisClient(config)
+    existing_rows = load_market_csv_rows(DATA_DIR / "kis_market.csv")
+    existing_by_code = {str(row.get("code", "")).zfill(6): row for row in existing_rows}
+    price_rows = []
+    for code in clean_codes:
+        fallback = existing_by_code.get(code, {})
+        payload = with_kis_retry(lambda code=code: client.inquire_price(code))
+        save_json(DATA_DIR / "kis_raw" / f"live_price_{code}.json", payload)
+        price_rows.extend(
+            market_rows_from_price_payload(
+                payload,
+                fallback_code=code,
+                fallback_name=str(fallback.get("name") or code),
+            )
+        )
+        time.sleep(0.25)
+    market_path = save_market_csv(
+        DATA_DIR / "kis_market.csv",
+        merge_market_rows(existing_rows + price_rows, prefer_latest=True),
+    )
+    sample = next((row for row in price_rows if str(row.get("code", "")).zfill(6) == "000660"), None)
+    return {
+        "ok": True,
+        "market": market_path.name,
+        "priceRows": len(price_rows),
+        "codes": clean_codes,
+        "updatedAt": int(time.time()),
+        "sampleQuote": sample or {},
+    }
 
 
 INDEX_HTML = """<!doctype html>
@@ -238,6 +462,12 @@ main { max-width: 1220px; margin: 0 auto; padding: 24px; }
 button { border: 0; border-radius: 8px; background: var(--blue); color: white; padding: 10px 14px; font-weight: 700; cursor: pointer; }
 button.live-on { background: #dc2626; }
 .note { color: var(--muted); font-size: 13px; }
+.kis-panel { display:grid; grid-template-columns: 260px 1fr; gap:12px; align-items:center; background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:14px; margin-bottom:16px; }
+.kis-panel h2 { margin:0 0 5px; font-size:16px; }
+.kis-form { display:flex; gap:8px; align-items:center; flex-wrap:wrap; justify-content:flex-end; }
+.kis-form input { min-width:160px; }
+.kis-form select { border:1px solid var(--line); border-radius:8px; padding:9px 10px; font:inherit; background:white; }
+.kis-form .status { min-width:190px; text-align:right; }
 .live-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #94a3b8; margin-right: 5px; vertical-align: 1px; }
 .live-dot.on { background: #ef4444; box-shadow: 0 0 0 4px rgba(239, 68, 68, .15); }
 .grid { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 12px; margin-bottom: 16px; }
@@ -335,6 +565,8 @@ tr.stock-row:hover { background: #f8fafc; }
 .paper-trade-actions { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
 @media (max-width: 860px) {
   .grid, .detail-grid, .detail-body, .insight-grid, .sector-strip, .signal-list, .pro-strip, .paper-grid, .paper-body { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .kis-panel { grid-template-columns: 1fr; }
+  .kis-form { justify-content:flex-start; }
   .bottom-list { grid-template-columns: 1fr; }
   table { font-size: 12px; }
   th:nth-child(7), td:nth-child(7), th:nth-child(8), td:nth-child(8) { display: none; }
@@ -355,6 +587,23 @@ tr.stock-row:hover { background: #f8fafc; }
     </div>
     <span class="note" id="stamp"><span class="live-dot" id="liveDot"></span><span id="liveStatus">대기</span></span>
   </div>
+  <section class="kis-panel">
+    <div>
+      <h2>KIS 한국투자증권 연결</h2>
+      <div class="note" id="kisStatus">연결 상태 확인 중</div>
+    </div>
+    <div class="kis-form">
+      <input id="kisAppKey" type="password" autocomplete="off" placeholder="APP KEY">
+      <input id="kisAppSecret" type="password" autocomplete="off" placeholder="APP SECRET">
+      <input id="kisAccountNo" autocomplete="off" placeholder="계좌번호">
+      <select id="kisVirtual">
+        <option value="false">실전투자 서버</option>
+        <option value="true">모의투자 서버</option>
+      </select>
+      <button id="kisSave" style="background:#0f766e">키 저장/확인</button>
+      <button id="kisRefresh" style="background:#b45309">현재가 KIS 갱신</button>
+    </div>
+  </section>
   <section class="grid">
     <div class="metric">분석 종목<b id="m-count">-</b></div>
     <div class="metric">발굴 강함<b id="m-strong">-</b></div>
@@ -677,6 +926,68 @@ function detailedChart(points, item = {}, width = 1040, height = 360) {
 function esc(text) {
   return String(text || "").replace(/[&<>"']/g, s => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#039;" }[s]));
 }
+function renderKisStatus(data) {
+  const status = document.querySelector("#kisStatus");
+  if (!data.configured) {
+    status.textContent = "미연결";
+    return;
+  }
+  document.querySelector("#kisVirtual").value = data.virtual ? "true" : "false";
+  status.textContent = `${data.mode || "KIS"} · KEY ${data.appKey || "저장됨"}`;
+}
+async function loadKisStatus() {
+  const res = await fetch(`/api/kis-status?t=${Date.now()}`);
+  const data = await res.json();
+  if (!data.ok) throw new Error(data.error || "KIS 상태 확인 실패");
+  renderKisStatus(data);
+  return data;
+}
+async function saveKisSettings() {
+  const btn = document.querySelector("#kisSave");
+  btn.disabled = true;
+  btn.textContent = "확인 중";
+  try {
+    const res = await fetch("/api/kis-settings", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({
+        appKey: document.querySelector("#kisAppKey").value,
+        appSecret: document.querySelector("#kisAppSecret").value,
+        accountNo: document.querySelector("#kisAccountNo").value,
+        productCode: "01",
+        virtual: document.querySelector("#kisVirtual").value === "true",
+      }),
+    });
+    const data = await res.json();
+    if (!data.ok) throw new Error(data.error || "KIS 연결 실패");
+    document.querySelector("#kisAppKey").value = "";
+    document.querySelector("#kisAppSecret").value = "";
+    renderKisStatus(data);
+    const sample = data.sampleQuote || {};
+    alert(`KIS 연결 확인 완료${sample.close ? ` · SK하이닉스 ${price(sample.close)}` : ""}`);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "키 저장/확인";
+  }
+}
+async function refreshKisPrices() {
+  const btn = document.querySelector("#kisRefresh");
+  btn.disabled = true;
+  btn.textContent = "현재가 갱신 중";
+  try {
+    const codes = currentItems.map(item => item.code).join(",");
+    const res = await fetch(`/api/kis-refresh?codes=${encodeURIComponent(codes)}`);
+    const data = await res.json();
+    if (!data.ok) throw new Error(data.error || "KIS 현재가 갱신 실패");
+    await load();
+    const sample = data.sampleQuote || {};
+    setLiveStatus(`KIS 현재가 ${data.priceRows || 0}종목`);
+    if (sample.close) alert(`KIS 현재가 갱신 완료 · SK하이닉스 ${price(sample.close)}`);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "현재가 KIS 갱신";
+  }
+}
 async function loadPaper() {
   const res = await fetch(`/api/paper?t=${Date.now()}`);
   const data = await res.json();
@@ -757,7 +1068,8 @@ async function load() {
   document.querySelector("#m-flow").textContent = data.items.filter(x => Number(x.flowRatio) >= .05).length;
   document.querySelector("#m-pro").textContent = data.items.filter(x => ["공격매수 후보", "분할매수 후보"].includes(x.pro?.bias)).length;
   document.querySelector("#m-risk").textContent = data.items.filter(x => x.recommendation === "위험").length;
-  lastDataLabel = `${data.marketCsv || ""} ${data.investorCsv || ""}`;
+  const quoteLabel = data.quoteSource ? `${data.quoteSource}${data.quoteOverrideCount ? ` ${data.quoteOverrideCount}종목` : ""}` : data.marketCsv || "";
+  lastDataLabel = `${quoteLabel} ${data.quoteUpdatedAt || ""}`;
   setLiveStatus(liveRunning ? "실시간 대기" : "대기");
   const bottomCandidates = data.bottomCandidates || [];
   const bottomAlert = document.querySelector("#bottomAlert");
@@ -975,6 +1287,11 @@ document.querySelector("#fetchKrx").addEventListener("click", async () => {
     }, 1200);
   }
 });
+document.querySelector("#kisSave").addEventListener("click", () => saveKisSettings().catch(err => alert(err.message)));
+document.querySelector("#kisRefresh").addEventListener("click", () => refreshKisPrices().catch(err => alert(err.message)));
+loadKisStatus().catch(err => {
+  document.querySelector("#kisStatus").textContent = err.message;
+});
 load();
 </script>
 </body>
@@ -982,14 +1299,56 @@ load();
 
 
 class Handler(BaseHTTPRequestHandler):
+    def _send_json(self, payload: dict[str, object], status: int | None = None) -> None:
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        self.send_response(status if status is not None else 200 if payload.get("ok", True) else 500)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _read_json_body(self) -> dict[str, object]:
+        length = int(self.headers.get("Content-Length", "0") or 0)
+        if length <= 0:
+            return {}
+        raw = self.rfile.read(length).decode("utf-8")
+        return json.loads(raw) if raw.strip() else {}
+
+    def do_POST(self) -> None:
+        if self.path.startswith("/api/kis-settings"):
+            try:
+                payload = {"ok": True} | save_kis_settings(self._read_json_body())
+            except Exception as error:
+                payload = {"ok": False, "error": str(error)}
+            self._send_json(payload)
+            return
+        self._send_json({"ok": False, "error": "지원하지 않는 요청입니다."}, status=404)
+
     def do_GET(self) -> None:
+        if self.path.startswith("/api/kis-status"):
+            try:
+                payload = kis_status_payload()
+            except Exception as error:
+                payload = {"ok": False, "error": str(error)}
+            self._send_json(payload)
+            return
+        if self.path.startswith("/api/kis-refresh"):
+            try:
+                parsed = urllib.parse.urlparse(self.path)
+                query = urllib.parse.parse_qs(parsed.query)
+                codes = [
+                    code.strip().zfill(6)
+                    for code in ",".join(query.get("codes", [])).split(",")
+                    if code.strip()
+                ]
+                payload = refresh_kis_quotes(codes)
+            except Exception as error:
+                payload = {"ok": False, "error": str(error)}
+            self._send_json(payload)
+            return
         if self.path.startswith("/api/analyze"):
-            payload = json.dumps(analyze_payload(), ensure_ascii=False).encode("utf-8")
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json; charset=utf-8")
-            self.send_header("Content-Length", str(len(payload)))
-            self.end_headers()
-            self.wfile.write(payload)
+            payload = analyze_payload(use_public_fallback=True)
+            self._send_json(payload)
             return
         if self.path.startswith("/api/paper"):
             try:

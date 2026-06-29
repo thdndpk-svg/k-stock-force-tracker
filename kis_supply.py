@@ -87,13 +87,7 @@ def _scaled_trade_value(raw_value: Any, qty: Any, price: Any) -> float:
 
 
 def _normalized_price(raw_price: Any, qty: float, net_value: float) -> float:
-    price = clean_number(raw_price)
-    if not price or not qty or not net_value:
-        return price
-    implied_price = abs(net_value) / abs(qty)
-    if implied_price and (price > implied_price * 2.0 or implied_price > price * 2.0):
-        return implied_price
-    return price
+    return clean_number(raw_price)
 
 
 def aggregate_supply_rows(payload: dict[str, Any], kind: str, trade_date: date | None = None) -> list[dict[str, object]]:
@@ -264,20 +258,7 @@ def load_market_csv_rows(path: Path) -> list[dict[str, object]]:
 
 
 def normalize_live_rows(rows: list[dict[str, object]], existing_rows: list[dict[str, object]]) -> list[dict[str, object]]:
-    old_price = {str(row.get("code", "")).zfill(6): clean_number(row.get("close")) for row in existing_rows}
-    normalized: list[dict[str, object]] = []
-    for row in rows:
-        item = dict(row)
-        code = str(item.get("code", "")).zfill(6)
-        previous = old_price.get(code, 0.0)
-        close = clean_number(item.get("close"))
-        if previous and close > previous * 2 and abs(close / 10.0 - previous) < abs(close - previous):
-            for field in ("close", "prev_close", "open", "high", "low", "trading_value"):
-                value = clean_number(item.get(field))
-                if value:
-                    item[field] = round(value / 10.0)
-        normalized.append(item)
-    return normalized
+    return [dict(row) for row in rows]
 
 
 def merge_market_rows(rows: list[dict[str, object]], prefer_latest: bool = False) -> list[dict[str, object]]:
