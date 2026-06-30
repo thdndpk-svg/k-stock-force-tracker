@@ -23,6 +23,7 @@ def build_mobile_payload() -> dict[str, object]:
         "bottomCandidates": payload.get("bottomCandidates", []),
         "sectors": payload.get("sectors", []),
         "items": payload.get("items", []),
+        "searchItems": payload.get("searchItems", []),
     }
 
 

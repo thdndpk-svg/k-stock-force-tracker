@@ -30,12 +30,18 @@ input { border:1px solid var(--line); border-radius:8px; padding:9px 10px; font:
 .metric { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:11px; }
 .metric span { display:block; color:var(--muted); font-size:12px; }
 .metric b { display:block; margin-top:5px; font-size:20px; }
+.search-panel { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:10px; margin-bottom:12px; display:grid; grid-template-columns:1fr auto; gap:8px; }
+.search-results { grid-column:1 / -1; display:grid; gap:7px; }
+.search-card { border:1px solid var(--line); border-radius:8px; padding:9px; background:#f8fafc; }
+.search-card b { display:block; }
+.search-card span { display:block; color:var(--muted); font-size:12px; margin-top:3px; }
 .paper-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:8px; }
 .paper-actions { display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-top:9px; }
 .paper-list { margin-top:9px; border-top:1px solid var(--line); }
-.paper-row { display:grid; grid-template-columns:1.1fr .7fr .9fr; gap:8px; padding:8px 0; border-bottom:1px solid var(--line); font-size:12px; align-items:center; }
+.paper-row { display:grid; grid-template-columns:1.1fr .7fr .9fr; gap:8px; padding:8px 0; border-bottom:1px solid var(--line); font-size:12px; align-items:center; cursor:pointer; }
 .paper-row b { display:block; }
 .paper-row span { color:var(--muted); }
+.paper-row-actions { grid-column:1 / -1; display:grid; grid-template-columns:1fr auto 1fr auto auto; gap:6px; }
 .paper-trade { border:1px solid var(--line); border-radius:8px; background:#f8fafc; padding:9px; margin-top:9px; }
 .paper-trade .trade-form { display:grid; grid-template-columns:1fr auto; gap:7px; margin-top:7px; }
 .mini { padding:8px 9px; font-size:12px; }
@@ -83,6 +89,7 @@ ul { margin:9px 0 0; padding-left:18px; color:#334155; font-size:13px; line-heig
   .metrics { grid-template-columns:repeat(2,minmax(0,1fr)); }
   .signals { grid-template-columns:1fr; }
   .flow { grid-template-columns:1fr; }
+  .paper-row-actions { grid-template-columns:1fr auto; }
 }
 </style>
 </head>
@@ -100,6 +107,11 @@ ul { margin:9px 0 0; padding-left:18px; color:#334155; font-size:13px; line-heig
     <div class="metric"><span>분석 종목</span><b id="m-count">-</b></div>
     <div class="metric"><span>발굴 강함</span><b id="m-strong">-</b></div>
     <div class="metric"><span>수급 집중</span><b id="m-flow">-</b></div>
+  </section>
+  <section class="search-panel">
+    <input id="stockSearch" autocomplete="off" placeholder="종목명 또는 종목코드 검색">
+    <button id="stockSearchClear">전체</button>
+    <div class="search-results" id="searchResults"></div>
   </section>
   <section class="panel">
     <h2>폰 모의투자</h2>
@@ -165,7 +177,7 @@ function savePaper(paper) {
   localStorage.setItem(PAPER_KEY, JSON.stringify(paper));
 }
 function quoteMap() {
-  return Object.fromEntries((lastPayload?.items || []).map(item => [item.code, item]));
+  return Object.fromEntries([...(lastPayload?.searchItems || []), ...(lastPayload?.items || [])].map(item => [item.code, item]));
 }
 function evaluatePaper() {
   const paper = loadPaper();
@@ -192,10 +204,17 @@ function renderPaper() {
   document.querySelector("#mp-cash").innerHTML = price(paper.cash);
   document.querySelector("#mp-return").innerHTML = signedPct(paper.returnPct);
   document.querySelector("#mp-holdings").innerHTML = paper.holdings.length ? paper.holdings.map(item => `
-    <div class="paper-row">
+    <div class="paper-row" onclick="openStock('${esc(item.code)}')">
       <div><b>${esc(item.name)}</b><span>${esc(item.code)} · ${esc(item.signal || "-")}</span></div>
       <div><b>${fmt.format(item.qty)}주</b><span>평단 ${price(item.avgPrice)}</span></div>
       <div><b>${signedMoney(item.pnl)}</b><span>${signedPct(item.pnlPct)} · ${price(item.currentPrice)}</span></div>
+      <div class="paper-row-actions" onclick="event.stopPropagation()">
+        <input id="hbuy-${item.code}" type="number" min="1" step="1" placeholder="매수수량">
+        <button class="mini" onclick="mobileBuyQty('${item.code}', 'hbuy-${item.code}')">매수</button>
+        <input id="hsell-${item.code}" type="number" min="1" step="1" placeholder="매도수량">
+        <button class="mini sell" onclick="mobileSell('${item.code}', false, 'hsell-${item.code}')">매도</button>
+        <button class="mini sell" onclick="mobileSell('${item.code}', true)">전량</button>
+      </div>
     </div>
   `).join("") : `<div class="empty">보유 종목 없음</div>`;
 }
@@ -226,12 +245,35 @@ function mobileBuy(code) {
   renderPaper();
   alert(`${quote.name} ${qty}주 모의매수 · ${price(current)}`);
 }
-function mobileSell(code, all = false) {
+function mobileBuyQty(code, inputId = "") {
+  const quote = quoteMap()[code];
+  if (!quote) return alert("현재 분석 목록에 없는 종목입니다.");
+  const input = inputId ? document.getElementById(inputId) : document.querySelector(`#mbuyqty-${code}`);
+  const qty = Number(input?.value || 0);
+  const current = Number(quote.close || 0);
+  const paper = loadPaper();
+  const cost = qty * current;
+  if (!current || qty <= 0) return alert("매수 수량을 확인하세요.");
+  if (cost > Number(paper.cash || 0)) return alert("예수금이 부족합니다.");
+  const old = paper.holdings[code] || { code, name: quote.name, qty: 0, avgPrice: 0 };
+  const oldCost = Number(old.qty || 0) * Number(old.avgPrice || 0);
+  const newQty = Number(old.qty || 0) + qty;
+  paper.holdings[code] = { code, name: quote.name, qty: newQty, avgPrice: (oldCost + cost) / newQty, lastPrice: current, signal: quote.tradeAction || "" };
+  paper.cash = Number(paper.cash || 0) - cost;
+  paper.trades.unshift({ side: "BUY", code, name: quote.name, qty, price: current, amount: cost, time: Date.now() });
+  paper.trades = paper.trades.slice(0, 100);
+  savePaper(paper);
+  renderPaper();
+  if (input) input.value = "";
+  alert(`${quote.name} ${qty}주 모의매수 · ${price(current)}`);
+}
+function mobileSell(code, all = false, inputId = "") {
   const quote = quoteMap()[code];
   const paper = loadPaper();
   const holding = paper.holdings[code];
   if (!holding) return alert("보유 수량이 없습니다.");
-  const inputQty = Number(document.querySelector(`#msell-${code}`).value || 0);
+  const input = inputId ? document.getElementById(inputId) : document.querySelector(`#msell-${code}`);
+  const inputQty = Number(input?.value || 0);
   const qty = all ? Number(holding.qty || 0) : Math.min(Number(holding.qty || 0), inputQty);
   const current = Number(quote?.close || holding.lastPrice || 0);
   if (!current || qty <= 0) return alert("매도 수량을 확인하세요.");
@@ -244,6 +286,7 @@ function mobileSell(code, all = false) {
   else paper.holdings[code] = holding;
   savePaper(paper);
   renderPaper();
+  if (input) input.value = "";
 }
 function cls(v) { return Number(v || 0) >= 0 ? "pos" : "neg"; }
 function pct(v) {
@@ -264,6 +307,39 @@ function tradeClass(label) {
   if (label === "매수권장") return "trade-buy";
   if (label === "매도") return "trade-sell";
   return "trade-hold";
+}
+function stockMatches(item, query) {
+  const q = String(query || "").trim().toLowerCase();
+  if (!q) return true;
+  return [
+    item.code,
+    item.name,
+    item.market,
+    item.sector,
+    item.theme,
+    item.recommendation,
+    item.tradeAction,
+    ...(item.tags || []),
+  ].join(" ").toLowerCase().includes(q);
+}
+function openStock(code) {
+  const article = document.querySelector(`.stock[data-code="${code}"]`);
+  if (!article) return;
+  article.classList.add("open");
+  article.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+function renderSearch(query) {
+  const source = lastPayload?.searchItems || lastPayload?.items || [];
+  const matches = query ? source.filter(item => stockMatches(item, query)) : [];
+  document.querySelector("#searchResults").innerHTML = query
+    ? (matches.length ? matches.slice(0, 8).map(item => `
+      <div class="search-card" onclick="openStock('${item.code}')">
+        <b>${esc(item.name)} (${esc(item.code)})</b>
+        <span>${price(item.close)} · ${pct(item.changeRate)} · ${esc(item.tradeAction || "보류")} · ${Number(item.discoveryScore || 0).toFixed(1)}점</span>
+      </div>
+    `).join("") : `<div class="search-card"><b>검색 결과 없음</b><span>데이터 분석 실행 후 다시 검색하세요.</span></div>`)
+    : "";
+  renderStocks(query ? matches.slice(0, 40) : (lastPayload?.items || []), new Set((lastPayload?.bottomCandidates || []).map(item => item.code)));
 }
 function chart(points, item = {}) {
   const data = (points || []).filter(p => Number.isFinite(Number(p.close)));
@@ -329,6 +405,54 @@ function actionsUrl() {
   if (!owner || !repo) return "https://github.com/";
   return `https://github.com/${owner}/${repo}/actions/workflows/mobile-analysis.yml`;
 }
+function renderStocks(items, bottomCodes = new Set()) {
+  document.querySelector("#stocks").innerHTML = items.map(item => `
+    <article class="stock ${bottomCodes.has(item.code) ? "open" : ""}" data-code="${esc(item.code)}">
+      <div class="stock-head" onclick="this.closest('.stock').classList.toggle('open')">
+        <div>
+          <h3>${item.rank}. ${esc(item.name)}</h3>
+          <div class="sub">${esc(item.code)} · ${esc(item.sector)} · ${esc(item.theme)} · 현재 ${price(item.close)}</div>
+          ${(item.tags || []).map(t => `<span class="tag">${esc(t)}</span>`).join("")}
+        </div>
+        <div class="score">${Number(item.discoveryScore || 0).toFixed(1)}<span class="trade-pill ${tradeClass(item.tradeAction)}">${esc(item.tradeAction || "보류")}</span></div>
+      </div>
+      <div class="flow">
+        <div><span>현가격</span><b>${price(item.close)}</b></div>
+        <div><span>매매 타이밍</span><b class="trade-text ${tradeClass(item.tradeAction)}">${esc(item.tradeAction || "보류")}</b></div>
+        <div><span>등락률</span><b class="${cls(item.changeRate)}">${pct(item.changeRate)}</b></div>
+        <div><span>수급집중</span><b>${(Number(item.flowRatio || 0) * 100).toFixed(1)}%</b></div>
+        <div><span>미국영향</span><b class="${cls(item.usImpact)}">${Number(item.usImpact || 0) >= 0 ? "+" : ""}${Number(item.usImpact || 0).toFixed(1)}</b></div>
+      </div>
+      <div class="detail">
+        ${chart(item.chart, item)}
+        <ul><li>타이밍: ${esc(item.tradeAction || "보류")} · ${esc(item.tradeReason || "")}</li></ul>
+        <div class="paper-trade">
+          <b>폰 모의투자 · 현가격 ${price(item.close)}</b>
+          <div class="trade-form">
+            <input id="mbuy-${item.code}" type="number" min="10000" step="10000" value="1000000">
+            <button class="mini" onclick="event.stopPropagation(); mobileBuy('${item.code}')">금액매수</button>
+          </div>
+          <div class="trade-form">
+            <input id="mbuyqty-${item.code}" type="number" min="1" step="1" placeholder="매수 수량">
+            <button class="mini" onclick="event.stopPropagation(); mobileBuyQty('${item.code}')">수량매수</button>
+          </div>
+          <div class="trade-form">
+            <input id="msell-${item.code}" type="number" min="1" step="1" placeholder="매도 수량">
+            <button class="mini sell" onclick="event.stopPropagation(); mobileSell('${item.code}', false)">매도</button>
+          </div>
+          <button class="mini sell" onclick="event.stopPropagation(); mobileSell('${item.code}', true)">전량 매도</button>
+        </div>
+        <div class="flow">
+          <div><span>외국인</span><b>${money(item.foreign)}</b></div>
+          <div><span>기관</span><b>${money(item.institution)}</b></div>
+          <div><span>거래대금</span><b>${money(item.value)}</b></div>
+        </div>
+        <ul>${(item.reasons || ["근거 부족"]).map(x => `<li>${esc(x)}</li>`).join("")}</ul>
+        ${Number(item.bottomScore || 0) >= 45 ? `<ul>${(item.bottomReasons || []).map(x => `<li>바닥매집: ${esc(x)}</li>`).join("")}</ul>` : ""}
+      </div>
+    </article>
+  `).join("") || `<div class="empty">분석 결과 없음</div>`;
+}
 async function loadData() {
   const res = await fetch(`data.json?t=${Date.now()}`);
   if (!res.ok) throw new Error("아직 분석 데이터가 없습니다. GitHub Actions 실행 후 다시 열어주세요.");
@@ -352,10 +476,11 @@ function render(data) {
       <span>${(item.reasons || []).slice(0,2).map(esc).join(" / ")}</span>
     </div>
   `).join("");
-  const order = ["nasdaq","sox","nvidia","tesla","bio","usdkrw","oil","china"];
+  const order = ["kospi","kosdaq","gold","usdkrw","nasdaq","sox","nvidia","tesla","bio","oil","china"];
   document.querySelector("#signals").innerHTML = order.map(k => data.signals?.[k]).filter(Boolean).map(sig => {
     const chg = Number(sig.change_pct || 0);
-    return `<div class="signal"><b>${esc(sig.label || sig.symbol)}</b><span class="${cls(chg)}">${pct(chg)}</span></div>`;
+    const close = Number(sig.close || 0);
+    return `<div class="signal"><b>${esc(sig.label || sig.symbol)}</b><span class="${cls(chg)}">${close ? `${fmt.format(close)} · ` : ""}${pct(chg)}</span></div>`;
   }).join("");
   document.querySelector("#sectors").innerHTML = (data.sectors || []).map(group => `
     <div class="sector">
@@ -363,54 +488,26 @@ function render(data) {
       ${(group.items || []).map(x => `<span>${esc(x.name)} ${Number(x.score || 0).toFixed(1)}점 · ${esc(x.theme)}</span>`).join("")}
     </div>
   `).join("") || `<div class="empty">섹터 후보 없음</div>`;
-  document.querySelector("#stocks").innerHTML = items.map(item => `
-    <article class="stock ${bottomCodes.has(item.code) ? "open" : ""}">
-      <div class="stock-head" onclick="this.closest('.stock').classList.toggle('open')">
-        <div>
-          <h3>${item.rank}. ${esc(item.name)}</h3>
-          <div class="sub">${esc(item.code)} · ${esc(item.sector)} · ${esc(item.theme)} · 현재 ${price(item.close)}</div>
-          ${(item.tags || []).map(t => `<span class="tag">${esc(t)}</span>`).join("")}
-        </div>
-        <div class="score">${Number(item.discoveryScore || 0).toFixed(1)}<span class="trade-pill ${tradeClass(item.tradeAction)}">${esc(item.tradeAction || "보류")}</span></div>
-      </div>
-      <div class="flow">
-        <div><span>현가격</span><b>${price(item.close)}</b></div>
-        <div><span>매매 타이밍</span><b class="trade-text ${tradeClass(item.tradeAction)}">${esc(item.tradeAction || "보류")}</b></div>
-        <div><span>등락률</span><b class="${cls(item.changeRate)}">${pct(item.changeRate)}</b></div>
-        <div><span>수급집중</span><b>${(Number(item.flowRatio || 0) * 100).toFixed(1)}%</b></div>
-        <div><span>미국영향</span><b class="${cls(item.usImpact)}">${Number(item.usImpact || 0) >= 0 ? "+" : ""}${Number(item.usImpact || 0).toFixed(1)}</b></div>
-      </div>
-      <div class="detail">
-        ${chart(item.chart, item)}
-        <ul><li>타이밍: ${esc(item.tradeAction || "보류")} · ${esc(item.tradeReason || "")}</li></ul>
-        <div class="paper-trade">
-          <b>폰 모의투자 · 현가격 ${price(item.close)}</b>
-          <div class="trade-form">
-            <input id="mbuy-${item.code}" type="number" min="10000" step="10000" value="1000000">
-            <button class="mini" onclick="event.stopPropagation(); mobileBuy('${item.code}')">매수</button>
-          </div>
-          <div class="trade-form">
-            <input id="msell-${item.code}" type="number" min="1" step="1" placeholder="매도 수량">
-            <button class="mini sell" onclick="event.stopPropagation(); mobileSell('${item.code}', false)">매도</button>
-          </div>
-          <button class="mini sell" onclick="event.stopPropagation(); mobileSell('${item.code}', true)">전량 매도</button>
-        </div>
-        <div class="flow">
-          <div><span>외국인</span><b>${money(item.foreign)}</b></div>
-          <div><span>기관</span><b>${money(item.institution)}</b></div>
-          <div><span>거래대금</span><b>${money(item.value)}</b></div>
-        </div>
-        <ul>${(item.reasons || ["근거 부족"]).map(x => `<li>${esc(x)}</li>`).join("")}</ul>
-        ${Number(item.bottomScore || 0) >= 45 ? `<ul>${(item.bottomReasons || []).map(x => `<li>바닥매집: ${esc(x)}</li>`).join("")}</ul>` : ""}
-      </div>
-    </article>
-  `).join("") || `<div class="empty">분석 결과 없음</div>`;
+  const query = document.querySelector("#stockSearch").value.trim();
+  const displayItems = query ? (data.searchItems || items).filter(item => stockMatches(item, query)).slice(0, 40) : items;
+  renderStocks(displayItems, bottomCodes);
   renderPaper();
 }
 document.querySelector("#refresh").addEventListener("click", () => loadData().catch(err => alert(err.message)));
 document.querySelector("#mp-reset").addEventListener("click", resetPaper);
 document.querySelector("#runAction").addEventListener("click", () => {
   window.open(actionsUrl(), "_blank", "noopener");
+});
+document.querySelector("#stockSearch").addEventListener("input", event => renderSearch(event.target.value));
+document.querySelector("#stockSearch").addEventListener("keydown", event => {
+  if (event.key === "Enter") {
+    const first = document.querySelector(".search-card");
+    if (first) first.click();
+  }
+});
+document.querySelector("#stockSearchClear").addEventListener("click", () => {
+  document.querySelector("#stockSearch").value = "";
+  renderSearch("");
 });
 loadData().catch(err => {
   document.querySelector("#stocks").innerHTML = `<div class="empty">${esc(err.message)}</div>`;

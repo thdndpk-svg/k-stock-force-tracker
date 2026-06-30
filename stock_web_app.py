@@ -20,7 +20,7 @@ from global_signals import fetch_global_signals, load_global_signals
 from kis_client import KisApiError, KisClient, save_json
 from kis_supply import aggregate_supply_rows, load_market_csv_rows, market_rows_from_price_payload, market_rows_from_supply_rows, market_rows_from_volume_rank, merge_market_rows, normalize_live_rows, save_market_csv, save_supply_csv
 from krx_downloader import fetch_krx_bundle
-from paper_trading import DEFAULT_CASH, buy as paper_buy, evaluate as evaluate_paper, load_portfolio, new_portfolio, save_portfolio, sell as paper_sell
+from paper_trading import DEFAULT_CASH, buy as paper_buy, buy_quantity as paper_buy_quantity, evaluate as evaluate_paper, load_portfolio, new_portfolio, save_portfolio, sell as paper_sell
 from price_normalizer import normalize_history_to_snapshots, price_unit_factor
 from professional_analysis import build_professional_view
 from scoring import ForceTracker
@@ -168,6 +168,49 @@ def chart_points(item, history) -> list[dict[str, float | str]]:
     return points[-120:]
 
 
+def score_item_payload(item, idx: int, snapshots_by_code, history, history_scale_by_code) -> dict[str, object]:
+    snapshot = snapshots_by_code.get(item.code)
+    return {
+        "rank": idx,
+        "code": item.code,
+        "name": item.name,
+        "market": item.market,
+        "sector": item.sector,
+        "theme": item.theme,
+        "grade": item.grade,
+        "recommendation": item.recommendation,
+        "tradeAction": item.trade_action,
+        "tradeReason": item.trade_reason,
+        "risk": item.risk_label,
+        "score": item.score,
+        "discoveryScore": item.discovery_score,
+        "close": item.close,
+        "changeRate": item.change_rate,
+        "value": item.trading_value,
+        "volumeRatio": item.volume_ratio,
+        "flowRatio": item.flow_ratio,
+        "usImpact": item.us_impact,
+        "issueScore": item.issue_score,
+        "bottomScore": item.bottom_score,
+        "bottomStage": item.bottom_stage,
+        "bottomSupport": item.bottom_support,
+        "bottomLongLine": item.bottom_long_line,
+        "bottomTouchCount": item.bottom_touch_count,
+        "bottomReasons": item.bottom_reasons,
+        "bottomWarnings": item.bottom_warnings,
+        "historyScale": history_scale_by_code.get(item.code, 1.0),
+        "foreign": item.foreign_net_value,
+        "institution": item.institution_net_value,
+        "foreignAvailable": item.foreign_net_available,
+        "institutionAvailable": item.institution_net_available,
+        "tags": item.tags,
+        "reasons": item.reasons,
+        "penalties": item.penalties,
+        "chart": chart_points(snapshot, history) if snapshot else [],
+        "pro": build_professional_view(item, history.get(item.code, [])),
+    }
+
+
 def analyze_payload(use_public_fallback: bool = False) -> dict[str, object]:
     market_csv = discover_market_csv(DATA_DIR)
     investor_paths = discover_investor_csvs(DATA_DIR)
@@ -246,54 +289,20 @@ def analyze_payload(use_public_fallback: bool = False) -> dict[str, object]:
             for sector, items in sorted(sector_groups.items(), key=lambda pair: pair[1][0]["score"], reverse=True)
             if sector != "기타"
         ][:8],
-        "items": [
-            {
-                "rank": idx,
-                "code": item.code,
-                "name": item.name,
-                "market": item.market,
-                "sector": item.sector,
-                "theme": item.theme,
-                "grade": item.grade,
-                "recommendation": item.recommendation,
-                "tradeAction": item.trade_action,
-                "tradeReason": item.trade_reason,
-                "risk": item.risk_label,
-                "score": item.score,
-                "discoveryScore": item.discovery_score,
-                "close": item.close,
-                "changeRate": item.change_rate,
-                "value": item.trading_value,
-                "volumeRatio": item.volume_ratio,
-                "flowRatio": item.flow_ratio,
-                "usImpact": item.us_impact,
-                "issueScore": item.issue_score,
-                "bottomScore": item.bottom_score,
-                "bottomStage": item.bottom_stage,
-                "bottomSupport": item.bottom_support,
-                "bottomLongLine": item.bottom_long_line,
-                "bottomTouchCount": item.bottom_touch_count,
-                "bottomReasons": item.bottom_reasons,
-                "bottomWarnings": item.bottom_warnings,
-                "historyScale": history_scale_by_code.get(item.code, 1.0),
-                "foreign": item.foreign_net_value,
-                "institution": item.institution_net_value,
-                "foreignAvailable": item.foreign_net_available,
-                "institutionAvailable": item.institution_net_available,
-                "tags": item.tags,
-                "reasons": item.reasons,
-                "penalties": item.penalties,
-                "chart": chart_points(snapshots_by_code[item.code], history),
-                "pro": build_professional_view(item, history.get(item.code, [])),
-            }
-            for idx, item in enumerate(results, 1)
+        "items": [score_item_payload(item, idx, snapshots_by_code, history, history_scale_by_code) for idx, item in enumerate(results, 1)],
+        "searchItems": [
+            score_item_payload(item, idx, snapshots_by_code, history, history_scale_by_code)
+            for idx, item in enumerate(all_results, 1)
         ],
     }
 
 
 def current_quote_map() -> dict[str, dict[str, object]]:
     payload = analyze_payload(use_public_fallback=True)
-    return {str(item.get("code", "")).zfill(6): item for item in payload.get("items", [])}
+    quotes = {}
+    for item in [*payload.get("searchItems", []), *payload.get("items", [])]:
+        quotes[str(item.get("code", "")).zfill(6)] = item
+    return quotes
 
 
 def paper_payload() -> dict[str, object]:
@@ -468,6 +477,11 @@ button.live-on { background: #dc2626; }
 .kis-form input { min-width:160px; }
 .kis-form select { border:1px solid var(--line); border-radius:8px; padding:9px 10px; font:inherit; background:white; }
 .kis-form .status { min-width:190px; text-align:right; }
+.search-panel { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:14px; margin-bottom:16px; display:grid; grid-template-columns: 1fr auto auto; gap:10px; align-items:center; }
+.search-results { grid-column:1 / -1; display:grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap:8px; }
+.search-card { border:1px solid var(--line); border-radius:8px; padding:10px; background:#f8fafc; cursor:pointer; }
+.search-card b { display:block; font-size:14px; }
+.search-card span { display:block; margin-top:4px; color:var(--muted); font-size:12px; line-height:1.35; }
 .live-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #94a3b8; margin-right: 5px; vertical-align: 1px; }
 .live-dot.on { background: #ef4444; box-shadow: 0 0 0 4px rgba(239, 68, 68, .15); }
 .grid { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 12px; margin-bottom: 16px; }
@@ -507,6 +521,8 @@ input { border:1px solid var(--line); border-radius:8px; padding:9px 10px; font:
 .paper-table { width:100%; border:1px solid var(--line); border-radius:8px; overflow:hidden; }
 .paper-table h3 { margin:0; padding:9px 10px; font-size:13px; background:#edf2f7; border-bottom:1px solid var(--line); }
 .paper-table table { font-size:12px; }
+.holding-row { cursor:pointer; }
+.holding-row:hover { background:#f8fafc; }
 .paper-empty { padding:18px 10px; color:var(--muted); font-size:12px; text-align:center; }
 .table { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
 table { width: 100%; border-collapse: collapse; font-size: 14px; }
@@ -567,6 +583,7 @@ tr.stock-row:hover { background: #f8fafc; }
   .grid, .detail-grid, .detail-body, .insight-grid, .sector-strip, .signal-list, .pro-strip, .paper-grid, .paper-body { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .kis-panel { grid-template-columns: 1fr; }
   .kis-form { justify-content:flex-start; }
+  .search-panel, .search-results { grid-template-columns: 1fr; }
   .bottom-list { grid-template-columns: 1fr; }
   table { font-size: 12px; }
   th:nth-child(7), td:nth-child(7), th:nth-child(8), td:nth-child(8) { display: none; }
@@ -603,6 +620,12 @@ tr.stock-row:hover { background: #f8fafc; }
       <button id="kisSave" style="background:#0f766e">키 저장/확인</button>
       <button id="kisRefresh" style="background:#b45309">현재가 KIS 갱신</button>
     </div>
+  </section>
+  <section class="search-panel">
+    <input id="stockSearch" autocomplete="off" placeholder="종목명 또는 종목코드 검색">
+    <button id="stockSearchBtn">검색/분석</button>
+    <button id="stockSearchClear" style="background:#64748b">전체 보기</button>
+    <div class="search-results" id="searchResults"></div>
   </section>
   <section class="grid">
     <div class="metric">분석 종목<b id="m-count">-</b></div>
@@ -696,7 +719,9 @@ tr.stock-row:hover { background: #f8fafc; }
       </div>
       <div class="paper-trade-actions">
         <input id="d-paper-amount" type="number" min="10000" step="10000" value="1000000" title="매수 금액">
-        <button class="mini-btn" id="d-paper-buy">현시세 매수</button>
+        <button class="mini-btn" id="d-paper-buy">금액 매수</button>
+        <input id="d-paper-buy-qty" type="number" min="1" step="1" placeholder="매수 수량" title="매수 수량">
+        <button class="mini-btn" id="d-paper-buy-qty-btn">수량 매수</button>
         <input id="d-paper-qty" type="number" min="1" step="1" placeholder="수량" title="매도 수량">
         <button class="mini-btn sell" id="d-paper-sell">수량 매도</button>
         <button class="mini-btn sell" id="d-paper-sell-all">전량 매도</button>
@@ -715,6 +740,9 @@ tr.stock-row:hover { background: #f8fafc; }
 <script>
 const fmt = new Intl.NumberFormat("ko-KR");
 let currentItems = [];
+let rankedItems = [];
+let searchableItems = [];
+let lastPayload = null;
 let currentDetailCode = "";
 let paperState = null;
 let liveTimer = null;
@@ -1004,16 +1032,19 @@ function renderPaper(paper) {
   const holdings = paper.holdings || [];
   document.querySelector("#paperHoldings").className = holdings.length ? "" : "paper-empty";
   document.querySelector("#paperHoldings").innerHTML = holdings.length ? `
-    <table><thead><tr><th>종목</th><th>수량</th><th>평단</th><th>현재</th><th>손익</th><th>현재신호</th><th></th></tr></thead>
+    <table><thead><tr><th>종목</th><th>수량</th><th>평단</th><th>현재</th><th>손익</th><th>현재신호</th><th>주문</th></tr></thead>
     <tbody>${holdings.map(item => `
-      <tr>
+      <tr class="holding-row" onclick="openDetail('${esc(item.code)}')">
         <td><b>${esc(item.name)}</b><br><span class="note">${esc(item.code)} · ${esc(item.setup || "")}</span></td>
         <td>${fmt.format(item.qty || 0)}</td>
         <td>${price(item.avg_price)}</td>
         <td>${price(item.current_price)}</td>
         <td>${signedMoney(item.pnl)}<br>${signedPct(item.pnl_pct)}</td>
         <td>${esc(item.current_signal || "-")}<br><span class="note">${esc(item.current_setup || "")}</span></td>
-        <td><button class="mini-btn sell" onclick="event.stopPropagation(); paperSell('${esc(item.code)}', 0, true)">전량</button></td>
+        <td>
+          <button class="mini-btn" onclick="event.stopPropagation(); openDetail('${esc(item.code)}')">추가/매도</button>
+          <button class="mini-btn sell" onclick="event.stopPropagation(); paperSell('${esc(item.code)}', 0, true)">전량</button>
+        </td>
       </tr>
     `).join("")}</tbody></table>
   ` : "보유 종목 없음";
@@ -1050,6 +1081,11 @@ async function paperBuy(code, amount) {
   document.querySelector("#d-paper-status").textContent = "모의매수 완료";
   return data;
 }
+async function paperBuyQty(code, qty) {
+  const data = await paperCall(`/api/paper-buy?code=${encodeURIComponent(code)}&qty=${encodeURIComponent(qty)}`);
+  document.querySelector("#d-paper-status").textContent = "수량 모의매수 완료";
+  return data;
+}
 async function paperSell(code, qty = 0, sellAll = false) {
   const url = sellAll
     ? `/api/paper-sell?code=${encodeURIComponent(code)}&all=1`
@@ -1058,10 +1094,79 @@ async function paperSell(code, qty = 0, sellAll = false) {
   document.querySelector("#d-paper-status").textContent = "모의매도 완료";
   return data;
 }
+function stockMatches(item, query) {
+  const q = String(query || "").trim().toLowerCase();
+  if (!q) return true;
+  const haystack = [
+    item.code,
+    item.name,
+    item.market,
+    item.sector,
+    item.theme,
+    item.recommendation,
+    item.tradeAction,
+    ...(item.tags || []),
+  ].join(" ").toLowerCase();
+  return haystack.includes(q);
+}
+function renderRows(items) {
+  currentItems = items || [];
+  document.querySelector("#rows").innerHTML = currentItems.map(item => `
+    <tr class="stock-row" onclick="openDetail('${item.code}')">
+      <td>${item.rank}</td>
+      <td><b>${esc(item.name)}</b><br><span class="note">${esc(item.code)} · ${esc(item.market)}</span></td>
+      <td><b>${esc(item.sector)}</b><br><span class="note">${esc(item.theme)}</span></td>
+      <td><span class="rec ${recClass(item.recommendation)}">${esc(item.recommendation)}</span><br><span class="note">위험 ${esc(item.risk)}</span></td>
+      <td><span class="action ${actionClass(item.tradeAction)}">${esc(item.tradeAction || "보류")}</span><br><span class="note">${esc(item.tradeReason || "")}</span></td>
+      <td><b>${esc(item.pro?.bias || "-")}</b><br><span class="note">${esc(item.pro?.setup || "")}</span></td>
+      <td class="score">${Number(item.discoveryScore).toFixed(1)}<br><span class="note">기본 ${Number(item.score).toFixed(1)}</span></td>
+      <td><b>${price(item.close)}</b><br>${rate(item.changeRate)}</td>
+      <td onclick="event.stopPropagation(); openDetail('${item.code}')">${sparkline(item.chart)}</td>
+      <td><b>${(Number(item.flowRatio || 0) * 100).toFixed(1)}%</b><br><span class="note">외 ${flow(item.foreign, item.foreignAvailable)} / 기 ${flow(item.institution, item.institutionAvailable)}</span></td>
+      <td>${Number(item.usImpact || 0) >= 0 ? "+" : ""}${Number(item.usImpact || 0).toFixed(1)}</td>
+      <td>${(item.tags || []).map(t => `<span class="tag">${esc(t)}</span>`).join("")}</td>
+      <td class="reasons">${(item.reasons || []).map(esc).join("<br>")}${item.penalties?.length ? `<br><span class="penalty">${item.penalties.map(esc).join("<br>")}</span>` : ""}</td>
+    </tr>
+  `).join("");
+}
+async function runStockSearch(autoOpen = true) {
+  const query = document.querySelector("#stockSearch").value.trim();
+  if (!query) {
+    document.querySelector("#searchResults").innerHTML = "";
+    renderRows(rankedItems);
+    return;
+  }
+  let matches = searchableItems.filter(item => stockMatches(item, query));
+  const codeLike = /^\\d{5,6}$/.test(query);
+  if (!matches.length && codeLike && autoOpen) {
+    try {
+      const res = await fetch(`/api/search-stock?q=${encodeURIComponent(query)}`);
+      const data = await res.json();
+      if (!data.ok) throw new Error(data.error || "검색 실패");
+      lastPayload = data.payload;
+      rankedItems = lastPayload.items || [];
+      searchableItems = lastPayload.searchItems || rankedItems;
+      matches = searchableItems.filter(item => stockMatches(item, query));
+    } catch (err) {
+      document.querySelector("#searchResults").innerHTML = `<div class="search-card"><b>검색 실패</b><span>${esc(err.message)}</span></div>`;
+      return;
+    }
+  }
+  renderRows(matches.slice(0, 40));
+  document.querySelector("#searchResults").innerHTML = matches.length ? matches.slice(0, 8).map(item => `
+    <div class="search-card" onclick="openDetail('${item.code}')">
+      <b>${esc(item.name)} (${esc(item.code)})</b>
+      <span>${price(item.close)} · ${rate(item.changeRate)} · ${esc(item.tradeAction || "보류")} · ${Number(item.discoveryScore || 0).toFixed(1)}점</span>
+    </div>
+  `).join("") : `<div class="search-card"><b>검색 결과 없음</b><span>종목코드 6자리로 검색하면 KIS 현재가 조회를 시도합니다.</span></div>`;
+  if (autoOpen && matches[0]) openDetail(matches[0].code);
+}
 async function load() {
   const res = await fetch("/api/analyze");
   const data = await res.json();
-  currentItems = data.items || [];
+  lastPayload = data;
+  rankedItems = data.items || [];
+  searchableItems = data.searchItems || rankedItems;
   document.querySelector("#m-count").textContent = data.count;
   document.querySelector("#m-strong").textContent = data.items.filter(x => Number(x.discoveryScore) >= 75).length;
   document.querySelector("#m-sector").textContent = (data.sectors || []).length;
@@ -1087,28 +1192,15 @@ async function load() {
       ${(group.items || []).map(x => `<span>${esc(x.name)} ${Number(x.score).toFixed(1)}점 · ${esc(x.theme)}</span>`).join("")}
     </div>
   `).join("") || `<span class="note">섹터 후보 없음</span>`;
-  const signalOrder = ["nasdaq", "sox", "nvidia", "tesla", "bio", "usdkrw", "oil", "china"];
+  const signalOrder = ["kospi", "kosdaq", "gold", "usdkrw", "nasdaq", "sox", "nvidia", "tesla", "bio", "oil", "china"];
   document.querySelector("#signalCards").innerHTML = signalOrder.map(key => data.signals?.[key]).filter(Boolean).map(sig => {
     const chg = Number(sig.change_pct || 0);
-    return `<div class="signal"><strong>${esc(sig.label || sig.symbol)}</strong><span class="${chg >= 0 ? "pos" : "neg"}">${chg >= 0 ? "+" : ""}${chg.toFixed(2)}%</span></div>`;
+    const close = Number(sig.close || 0);
+    return `<div class="signal"><strong>${esc(sig.label || sig.symbol)}</strong><span class="${chg >= 0 ? "pos" : "neg"}">${close ? `${fmt.format(close)} · ` : ""}${chg >= 0 ? "+" : ""}${chg.toFixed(2)}%</span></div>`;
   }).join("");
-  document.querySelector("#rows").innerHTML = data.items.map(item => `
-    <tr class="stock-row" onclick="openDetail('${item.code}')">
-      <td>${item.rank}</td>
-      <td><b>${item.name}</b><br><span class="note">${item.code} · ${item.market}</span></td>
-      <td><b>${item.sector}</b><br><span class="note">${item.theme}</span></td>
-      <td><span class="rec ${recClass(item.recommendation)}">${item.recommendation}</span><br><span class="note">위험 ${item.risk}</span></td>
-      <td><span class="action ${actionClass(item.tradeAction)}">${item.tradeAction || "보류"}</span><br><span class="note">${esc(item.tradeReason || "")}</span></td>
-      <td><b>${esc(item.pro?.bias || "-")}</b><br><span class="note">${esc(item.pro?.setup || "")}</span></td>
-      <td class="score">${Number(item.discoveryScore).toFixed(1)}<br><span class="note">기본 ${Number(item.score).toFixed(1)}</span></td>
-      <td><b>${price(item.close)}</b><br>${rate(item.changeRate)}</td>
-      <td onclick="event.stopPropagation(); openDetail('${item.code}')">${sparkline(item.chart)}</td>
-      <td><b>${(Number(item.flowRatio || 0) * 100).toFixed(1)}%</b><br><span class="note">외 ${flow(item.foreign, item.foreignAvailable)} / 기 ${flow(item.institution, item.institutionAvailable)}</span></td>
-      <td>${Number(item.usImpact || 0) >= 0 ? "+" : ""}${Number(item.usImpact || 0).toFixed(1)}</td>
-      <td>${item.tags.map(t => `<span class="tag">${t}</span>`).join("")}</td>
-      <td class="reasons">${item.reasons.join("<br>")}${item.penalties.length ? `<br><span class="penalty">${item.penalties.join("<br>")}</span>` : ""}</td>
-    </tr>
-  `).join("");
+  const query = document.querySelector("#stockSearch").value.trim();
+  if (query) runStockSearch(false);
+  else renderRows(rankedItems);
   if (!bottomAutoOpened && bottomCandidates.length) {
     const first = bottomCandidates.find(candidate => currentItems.some(item => item.code === candidate.code));
     if (first) {
@@ -1157,7 +1249,7 @@ function stopLive() {
   setLiveStatus("대기");
 }
 function openDetail(code) {
-  const item = currentItems.find(x => x.code === code);
+  const item = currentItems.find(x => x.code === code) || searchableItems.find(x => x.code === code) || rankedItems.find(x => x.code === code);
   if (!item) return;
   currentDetailCode = code;
   const pro = item.pro || {};
@@ -1178,6 +1270,7 @@ function openDetail(code) {
   document.querySelector("#d-price-scale").textContent = Number(item.historyScale || 1) !== 1 ? `차트 ×${Number(item.historyScale).toFixed(0)}` : "원본";
   document.querySelector("#d-paper-status").textContent = `${price(item.close)} 현시세 기준 가상 체결`;
   document.querySelector("#d-paper-qty").value = "";
+  document.querySelector("#d-paper-buy-qty").value = "";
   document.querySelector("#d-chart").innerHTML = detailedChart(item.chart, item);
   document.querySelector("#d-pro-strip").innerHTML = [
     ["셋업", pro.setup || "-", pro.bias === "공격매수 후보" || pro.bias === "분할매수 후보" ? "positive" : ""],
@@ -1213,6 +1306,11 @@ document.querySelector("#d-paper-buy").addEventListener("click", () => {
   const amount = Number(document.querySelector("#d-paper-amount").value || 0);
   if (!currentDetailCode) return;
   paperBuy(currentDetailCode, amount).catch(err => alert(err.message));
+});
+document.querySelector("#d-paper-buy-qty-btn").addEventListener("click", () => {
+  const qty = Number(document.querySelector("#d-paper-buy-qty").value || 0);
+  if (!currentDetailCode) return;
+  paperBuyQty(currentDetailCode, qty).catch(err => alert(err.message));
 });
 document.querySelector("#d-paper-sell").addEventListener("click", () => {
   const qty = Number(document.querySelector("#d-paper-qty").value || 0);
@@ -1289,6 +1387,16 @@ document.querySelector("#fetchKrx").addEventListener("click", async () => {
 });
 document.querySelector("#kisSave").addEventListener("click", () => saveKisSettings().catch(err => alert(err.message)));
 document.querySelector("#kisRefresh").addEventListener("click", () => refreshKisPrices().catch(err => alert(err.message)));
+document.querySelector("#stockSearchBtn").addEventListener("click", () => runStockSearch(true));
+document.querySelector("#stockSearch").addEventListener("keydown", event => {
+  if (event.key === "Enter") runStockSearch(true);
+});
+document.querySelector("#stockSearch").addEventListener("input", () => runStockSearch(false));
+document.querySelector("#stockSearchClear").addEventListener("click", () => {
+  document.querySelector("#stockSearch").value = "";
+  document.querySelector("#searchResults").innerHTML = "";
+  renderRows(rankedItems);
+});
 loadKisStatus().catch(err => {
   document.querySelector("#kisStatus").textContent = err.message;
 });
@@ -1346,6 +1454,18 @@ class Handler(BaseHTTPRequestHandler):
                 payload = {"ok": False, "error": str(error)}
             self._send_json(payload)
             return
+        if self.path.startswith("/api/search-stock"):
+            try:
+                parsed = urllib.parse.urlparse(self.path)
+                query = urllib.parse.parse_qs(parsed.query)
+                search = str(query.get("q", [""])[0]).strip()
+                if search.isdigit() and 5 <= len(search) <= 6:
+                    refresh_kis_quotes([search])
+                payload = {"ok": True, "payload": analyze_payload(use_public_fallback=True)}
+            except Exception as error:
+                payload = {"ok": False, "error": str(error)}
+            self._send_json(payload)
+            return
         if self.path.startswith("/api/analyze"):
             payload = analyze_payload(use_public_fallback=True)
             self._send_json(payload)
@@ -1363,9 +1483,10 @@ class Handler(BaseHTTPRequestHandler):
                 elif parsed.path == "/api/paper-buy":
                     code = str(query.get("code", [""])[0]).zfill(6)
                     amount = float(query.get("amount", [0])[0] or 0)
+                    qty = int(float(query.get("qty", [0])[0] or 0))
                     if code not in quotes:
                         raise RuntimeError("현재 앱 분석 목록에 있는 종목만 매수할 수 있습니다.")
-                    portfolio = paper_buy(portfolio, quotes[code], amount)
+                    portfolio = paper_buy_quantity(portfolio, quotes[code], qty) if qty > 0 else paper_buy(portfolio, quotes[code], amount)
                     save_portfolio(PAPER_PORTFOLIO_PATH, portfolio)
                 elif parsed.path == "/api/paper-sell":
                     code = str(query.get("code", [""])[0]).zfill(6)

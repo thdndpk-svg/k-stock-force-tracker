@@ -46,16 +46,16 @@ def _quote_value(quote: dict[str, Any], key: str, default: Any = "") -> Any:
     return quote.get(key, default)
 
 
-def buy(portfolio: dict[str, Any], quote: dict[str, Any], amount: float) -> dict[str, Any]:
+def _buy_qty(portfolio: dict[str, Any], quote: dict[str, Any], qty: int) -> dict[str, Any]:
     item = deepcopy(portfolio)
     price = float(_quote_value(quote, "close", 0.0) or 0.0)
     if price <= 0:
         raise ValueError("현재가가 없어 매수할 수 없습니다.")
-    budget = min(float(amount), float(item.get("cash", 0.0)))
-    qty = int(budget // price)
     if qty <= 0:
-        raise ValueError("예수금 또는 투자금이 부족합니다.")
+        raise ValueError("매수 수량이 올바르지 않습니다.")
     cost = qty * price
+    if cost > float(item.get("cash", 0.0)):
+        raise ValueError("예수금이 부족합니다.")
     code = str(_quote_value(quote, "code"))
     holding = dict(item["holdings"].get(code, {}))
     old_qty = int(holding.get("qty", 0))
@@ -94,6 +94,21 @@ def buy(portfolio: dict[str, Any], quote: dict[str, Any], amount: float) -> dict
     )
     item["trades"] = item["trades"][:200]
     return item
+
+
+def buy(portfolio: dict[str, Any], quote: dict[str, Any], amount: float) -> dict[str, Any]:
+    price = float(_quote_value(quote, "close", 0.0) or 0.0)
+    if price <= 0:
+        raise ValueError("현재가가 없어 매수할 수 없습니다.")
+    budget = min(float(amount), float(portfolio.get("cash", 0.0)))
+    qty = int(budget // price)
+    if qty <= 0:
+        raise ValueError("예수금 또는 투자금이 부족합니다.")
+    return _buy_qty(portfolio, quote, qty)
+
+
+def buy_quantity(portfolio: dict[str, Any], quote: dict[str, Any], qty: int) -> dict[str, Any]:
+    return _buy_qty(portfolio, quote, max(0, int(qty)))
 
 
 def sell(portfolio: dict[str, Any], quote: dict[str, Any], qty: int | None = None, sell_all: bool = False) -> dict[str, Any]:

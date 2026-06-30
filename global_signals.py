@@ -12,6 +12,9 @@ from config import DATA_DIR
 
 CACHE_PATH = DATA_DIR / "global_signals.json"
 SIGNALS = {
+    "kospi": ("코스피", "^KS11"),
+    "kosdaq": ("코스닥", "^KQ11"),
+    "gold": ("금 선물", "GC=F"),
     "nasdaq": ("나스닥", "^IXIC"),
     "sp500": ("S&P500", "^GSPC"),
     "sox": ("필라델피아 반도체", "^SOX"),

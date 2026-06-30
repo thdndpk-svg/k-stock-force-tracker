@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from paper_trading import buy, evaluate, load_portfolio, new_portfolio, save_portfolio, sell
+from paper_trading import buy, buy_quantity, evaluate, load_portfolio, new_portfolio, save_portfolio, sell
 
 
 QUOTE = {
@@ -44,6 +44,25 @@ class PaperTradingTest(unittest.TestCase):
 
             self.assertEqual(loaded["cash"], portfolio["cash"])
             self.assertEqual(loaded["holdings"]["000660"]["qty"], 2)
+
+    def test_buy_quantity_and_sell_partial(self) -> None:
+        quote = {"code": "000660", "name": "SK하이닉스", "close": 2_622_000, "tradeAction": "보류"}
+        portfolio = buy_quantity(new_portfolio(10_000_000), quote, 2)
+
+        self.assertEqual(portfolio["holdings"]["000660"]["qty"], 2)
+        self.assertEqual(portfolio["cash"], 4_756_000)
+
+        portfolio = sell(portfolio, {**quote, "close": 2_700_000}, qty=1)
+
+        self.assertEqual(portfolio["holdings"]["000660"]["qty"], 1)
+        self.assertEqual(portfolio["cash"], 7_456_000)
+        self.assertGreater(portfolio["realized_pnl"], 0)
+
+    def test_buy_quantity_rejects_insufficient_cash(self) -> None:
+        quote = {"code": "000660", "name": "SK하이닉스", "close": 2_622_000}
+
+        with self.assertRaises(ValueError):
+            buy_quantity(new_portfolio(1_000_000), quote, 1)
 
 
 if __name__ == "__main__":
