@@ -1032,7 +1032,7 @@ function renderPaper(paper) {
   const holdings = paper.holdings || [];
   document.querySelector("#paperHoldings").className = holdings.length ? "" : "paper-empty";
   document.querySelector("#paperHoldings").innerHTML = holdings.length ? `
-    <table><thead><tr><th>종목</th><th>수량</th><th>평단</th><th>현재</th><th>손익</th><th>현재신호</th><th>주문</th></tr></thead>
+    <table><thead><tr><th>종목</th><th>수량</th><th>평단</th><th>현재</th><th>손익</th><th>관리권유</th><th>주문</th></tr></thead>
     <tbody>${holdings.map(item => `
       <tr class="holding-row" onclick="openDetail('${esc(item.code)}')">
         <td><b>${esc(item.name)}</b><br><span class="note">${esc(item.code)} · ${esc(item.setup || "")}</span></td>
@@ -1040,7 +1040,7 @@ function renderPaper(paper) {
         <td>${price(item.avg_price)}</td>
         <td>${price(item.current_price)}</td>
         <td>${signedMoney(item.pnl)}<br>${signedPct(item.pnl_pct)}</td>
-        <td>${esc(item.current_signal || "-")}<br><span class="note">${esc(item.current_setup || "")}</span></td>
+        <td><b>${esc(item.paper_action || item.current_signal || "보유")}</b><br><span class="note">${esc(item.paper_reason || item.current_setup || "")}</span></td>
         <td>
           <button class="mini-btn" onclick="event.stopPropagation(); openDetail('${esc(item.code)}')">추가/매도</button>
           <button class="mini-btn sell" onclick="event.stopPropagation(); paperSell('${esc(item.code)}', 0, true)">전량</button>
@@ -1159,6 +1159,7 @@ async function runStockSearch(autoOpen = true) {
       <span>${price(item.close)} · ${rate(item.changeRate)} · ${esc(item.tradeAction || "보류")} · ${Number(item.discoveryScore || 0).toFixed(1)}점</span>
     </div>
   `).join("") : `<div class="search-card"><b>검색 결과 없음</b><span>종목코드 6자리로 검색하면 KIS 현재가 조회를 시도합니다.</span></div>`;
+  loadPaper().catch(() => {});
   if (autoOpen && matches[0]) openDetail(matches[0].code);
 }
 async function load() {

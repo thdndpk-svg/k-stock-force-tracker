@@ -111,6 +111,17 @@ def buy_quantity(portfolio: dict[str, Any], quote: dict[str, Any], qty: int) -> 
     return _buy_qty(portfolio, quote, max(0, int(qty)))
 
 
+def _holding_action(holding: dict[str, Any], quote: dict[str, Any]) -> tuple[str, str]:
+    signal = str(quote.get("tradeAction") or holding.get("signal") or "")
+    reason = str(quote.get("tradeReason") or "")
+    setup = str((quote.get("pro", {}) or {}).get("bias") or holding.get("setup") or "")
+    if signal == "매도":
+        return "매도 권유", reason or "현재 분석 신호가 매도로 바뀌었습니다."
+    if signal == "매수권장":
+        return "보유/추가매수", reason or "현재 분석 신호가 우호적입니다."
+    return "보유", reason or setup or "뚜렷한 매도 신호가 없어 보유 관찰합니다."
+
+
 def sell(portfolio: dict[str, Any], quote: dict[str, Any], qty: int | None = None, sell_all: bool = False) -> dict[str, Any]:
     item = deepcopy(portfolio)
     code = str(_quote_value(quote, "code"))
@@ -165,6 +176,7 @@ def evaluate(portfolio: dict[str, Any], quotes: dict[str, dict[str, Any]]) -> di
     unrealized_pnl = 0.0
     for code, holding in portfolio.get("holdings", {}).items():
         quote = quotes.get(code, {})
+        paper_action, paper_reason = _holding_action(holding, quote)
         price = float(quote.get("close") or holding.get("last_price") or holding.get("avg_price") or 0.0)
         qty = int(holding.get("qty", 0))
         avg_price = float(holding.get("avg_price", 0.0))
@@ -184,6 +196,8 @@ def evaluate(portfolio: dict[str, Any], quotes: dict[str, dict[str, Any]]) -> di
                 "pnl_pct": ((price / avg_price - 1.0) * 100.0) if avg_price else 0.0,
                 "current_signal": quote.get("tradeAction", ""),
                 "current_setup": (quote.get("pro", {}) or {}).get("bias", ""),
+                "paper_action": paper_action,
+                "paper_reason": paper_reason,
             }
         )
     initial_cash = float(portfolio.get("initial_cash", DEFAULT_CASH) or DEFAULT_CASH)

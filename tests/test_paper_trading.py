@@ -33,6 +33,16 @@ class PaperTradingTest(unittest.TestCase):
         self.assertEqual(summary["marketValue"], 540_000)
         self.assertEqual(summary["totalEquity"], 10_080_000)
         self.assertGreater(summary["returnPct"], 0)
+        self.assertEqual(summary["holdings"][0]["paper_action"], "보유/추가매수")
+
+    def test_evaluate_marks_sell_recommendation_for_holdings(self) -> None:
+        portfolio = buy_quantity(new_portfolio(10_000_000), QUOTE, 4)
+        sell_quote = {**QUOTE, "tradeAction": "매도", "tradeReason": "손절선 이탈"}
+
+        summary = evaluate(portfolio, {"000660": sell_quote})
+
+        self.assertEqual(summary["holdings"][0]["paper_action"], "매도 권유")
+        self.assertEqual(summary["holdings"][0]["paper_reason"], "손절선 이탈")
 
     def test_portfolio_persists_to_local_json(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

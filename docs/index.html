@@ -30,7 +30,7 @@ input { border:1px solid var(--line); border-radius:8px; padding:9px 10px; font:
 .metric { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:11px; }
 .metric span { display:block; color:var(--muted); font-size:12px; }
 .metric b { display:block; margin-top:5px; font-size:20px; }
-.search-panel { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:10px; margin-bottom:12px; display:grid; grid-template-columns:1fr auto; gap:8px; }
+.search-panel { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:10px; margin-bottom:12px; display:grid; grid-template-columns:1fr auto auto; gap:8px; }
 .search-results { grid-column:1 / -1; display:grid; gap:7px; }
 .search-card { border:1px solid var(--line); border-radius:8px; padding:9px; background:#f8fafc; }
 .search-card b { display:block; }
@@ -110,6 +110,7 @@ ul { margin:9px 0 0; padding-left:18px; color:#334155; font-size:13px; line-heig
   </section>
   <section class="search-panel">
     <input id="stockSearch" autocomplete="off" placeholder="종목명 또는 종목코드 검색">
+    <button id="stockSearchGo">검색</button>
     <button id="stockSearchClear">전체</button>
     <div class="search-results" id="searchResults"></div>
   </section>
@@ -192,7 +193,10 @@ function evaluatePaper() {
     const cost = qty * avg;
     marketValue += value;
     costTotal += cost;
-    return { ...holding, currentPrice: current, marketValue: value, pnl: value - cost, pnlPct: avg ? (current / avg - 1) * 100 : 0, signal: quote.tradeAction || holding.signal || "" };
+    const signal = quote.tradeAction || holding.signal || "";
+    const paperAction = signal === "매도" ? "매도 권유" : (signal === "매수권장" ? "보유/추가매수" : "보유");
+    const paperReason = quote.tradeReason || quote.pro?.bias || (signal === "매도" ? "현재 분석 신호가 매도로 바뀌었습니다." : "현재가 기준으로 보유 평가합니다.");
+    return { ...holding, currentPrice: current, marketValue: value, pnl: value - cost, pnlPct: avg ? (current / avg - 1) * 100 : 0, signal, paperAction, paperReason };
   });
   const totalEquity = Number(paper.cash || 0) + marketValue;
   const returnPct = paper.initialCash ? (totalEquity / paper.initialCash - 1) * 100 : 0;
@@ -205,9 +209,9 @@ function renderPaper() {
   document.querySelector("#mp-return").innerHTML = signedPct(paper.returnPct);
   document.querySelector("#mp-holdings").innerHTML = paper.holdings.length ? paper.holdings.map(item => `
     <div class="paper-row" onclick="openStock('${esc(item.code)}')">
-      <div><b>${esc(item.name)}</b><span>${esc(item.code)} · ${esc(item.signal || "-")}</span></div>
+      <div><b>${esc(item.name)}</b><span>${esc(item.code)} · ${esc(item.paperAction || "보유")}</span></div>
       <div><b>${fmt.format(item.qty)}주</b><span>평단 ${price(item.avgPrice)}</span></div>
-      <div><b>${signedMoney(item.pnl)}</b><span>${signedPct(item.pnlPct)} · ${price(item.currentPrice)}</span></div>
+      <div><b>${signedMoney(item.pnl)}</b><span>${signedPct(item.pnlPct)} · ${price(item.currentPrice)}</span><span>${esc(item.paperReason || "")}</span></div>
       <div class="paper-row-actions" onclick="event.stopPropagation()">
         <input id="hbuy-${item.code}" type="number" min="1" step="1" placeholder="매수수량">
         <button class="mini" onclick="mobileBuyQty('${item.code}', 'hbuy-${item.code}')">매수</button>
@@ -340,6 +344,7 @@ function renderSearch(query) {
     `).join("") : `<div class="search-card"><b>검색 결과 없음</b><span>데이터 분석 실행 후 다시 검색하세요.</span></div>`)
     : "";
   renderStocks(query ? matches.slice(0, 40) : (lastPayload?.items || []), new Set((lastPayload?.bottomCandidates || []).map(item => item.code)));
+  renderPaper();
 }
 function chart(points, item = {}) {
   const data = (points || []).filter(p => Number.isFinite(Number(p.close)));
@@ -504,6 +509,11 @@ document.querySelector("#stockSearch").addEventListener("keydown", event => {
     const first = document.querySelector(".search-card");
     if (first) first.click();
   }
+});
+document.querySelector("#stockSearchGo").addEventListener("click", () => {
+  renderSearch(document.querySelector("#stockSearch").value);
+  const first = document.querySelector(".search-card");
+  if (first) first.click();
 });
 document.querySelector("#stockSearchClear").addEventListener("click", () => {
   document.querySelector("#stockSearch").value = "";
