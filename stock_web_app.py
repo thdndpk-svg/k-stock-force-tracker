@@ -14,7 +14,7 @@ from datetime import date, datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from config import APP_DIR, DATA_DIR, KisConfig
-from data_loader import discover_investor_csvs, discover_market_csv, load_history_dir, load_market_snapshots, merge_krx_investor_csvs
+from data_loader import discover_investor_csvs, discover_market_csv, discover_search_universe_csv, load_history_dir, load_market_snapshots, merge_krx_investor_csvs
 from config import get_kis_config
 from global_signals import fetch_global_signals, load_global_signals
 from kis_client import KisApiError, KisClient, save_json
@@ -24,6 +24,7 @@ from paper_trading import DEFAULT_CASH, buy as paper_buy, buy_quantity as paper_
 from price_normalizer import normalize_history_to_snapshots, price_unit_factor
 from professional_analysis import build_professional_view
 from scoring import ForceTracker
+from theme_engine import classify_stock
 
 
 PAPER_PORTFOLIO_PATH = DATA_DIR / "paper_portfolio.json"
@@ -168,9 +169,83 @@ def chart_points(item, history) -> list[dict[str, float | str]]:
     return points[-120:]
 
 
-def score_item_payload(item, idx: int, snapshots_by_code, history, history_scale_by_code) -> dict[str, object]:
-    snapshot = snapshots_by_code.get(item.code)
+def search_market_allowed(market: str) -> bool:
+    text = str(market or "").upper()
+    return "KOSPI" in text or "KOSDAQ" in text
+
+
+def merged_search_snapshots(primary_snapshots: list, data_dir) -> tuple[list, str]:
+    universe_csv = discover_search_universe_csv(data_dir)
+    if universe_csv is None:
+        return primary_snapshots, ""
+    universe_snapshots = [
+        item
+        for item in load_market_snapshots(universe_csv)
+        if search_market_allowed(item.market)
+    ]
+    by_code = {item.code: item for item in universe_snapshots}
+    by_code.update({item.code: item for item in primary_snapshots})
+    return list(by_code.values()), universe_csv.name
+
+
+def simple_trade_action(change_rate: float) -> tuple[str, str, str]:
+    if change_rate >= 15.0:
+        return "매도", "단기 급등 구간이라 추격보다 분할매도/관망 우선", "위험"
+    if change_rate <= -7.0:
+        return "보류", "당일 약세가 커서 반등 확인 전까지 관망", "높음"
+    if 1.5 <= change_rate <= 8.0:
+        return "보류", "가격 흐름은 양호하지만 정밀 수급 확인 필요", "보통"
+    return "보류", "검색 종목은 선택 시 단일 분석으로 확인", "보통"
+
+
+def search_item_payload(snapshot, idx: int) -> dict[str, object]:
+    sector, theme, tags = classify_stock(snapshot.name)
+    trade_action, trade_reason, risk = simple_trade_action(snapshot.change_rate)
     return {
+        "rank": idx,
+        "code": snapshot.code,
+        "name": snapshot.name,
+        "market": snapshot.market,
+        "sector": sector,
+        "theme": theme,
+        "grade": "검색",
+        "recommendation": "검색",
+        "tradeAction": trade_action,
+        "tradeReason": trade_reason,
+        "risk": risk,
+        "score": 0.0,
+        "discoveryScore": 0.0,
+        "close": snapshot.close,
+        "changeRate": snapshot.change_rate,
+        "value": snapshot.trading_value,
+        "volumeRatio": snapshot.volume_ratio_hint or 1.0,
+        "flowRatio": 0.0,
+        "usImpact": 0.0,
+        "issueScore": 0.0,
+        "bottomScore": 0.0,
+        "bottomStage": "",
+        "bottomSupport": 0.0,
+        "bottomLongLine": 0.0,
+        "bottomTouchCount": 0,
+        "bottomReasons": [],
+        "bottomWarnings": [],
+        "historyScale": 1.0,
+        "foreign": snapshot.foreign_net_value,
+        "institution": snapshot.institution_net_value,
+        "foreignAvailable": snapshot.foreign_net_available,
+        "institutionAvailable": snapshot.institution_net_available,
+        "tags": list(tags),
+        "reasons": [trade_reason],
+        "penalties": [],
+        "chart": [],
+        "pro": {},
+        "detailReady": False,
+    }
+
+
+def score_item_payload(item, idx: int, snapshots_by_code, history, history_scale_by_code, include_detail: bool = True) -> dict[str, object]:
+    snapshot = snapshots_by_code.get(item.code)
+    payload = {
         "rank": idx,
         "code": item.code,
         "name": item.name,
@@ -206,9 +281,15 @@ def score_item_payload(item, idx: int, snapshots_by_code, history, history_scale
         "tags": item.tags,
         "reasons": item.reasons,
         "penalties": item.penalties,
-        "chart": chart_points(snapshot, history) if snapshot else [],
-        "pro": build_professional_view(item, history.get(item.code, [])),
+        "detailReady": include_detail,
     }
+    if include_detail:
+        payload["chart"] = chart_points(snapshot, history) if snapshot else []
+        payload["pro"] = build_professional_view(item, history.get(item.code, []))
+    else:
+        payload["chart"] = []
+        payload["pro"] = {}
+    return payload
 
 
 def analyze_payload(use_public_fallback: bool = False) -> dict[str, object]:
@@ -227,9 +308,10 @@ def analyze_payload(use_public_fallback: bool = False) -> dict[str, object]:
         except Exception as error:
             quote_meta = {"quoteSource": "로컬 CSV", "quoteUpdatedAt": "", "quoteOverrideCount": 0, "quoteError": str(error)}
     raw_history = load_history_dir(DATA_DIR / "history")
+    search_snapshots, search_market_csv = merged_search_snapshots(snapshots, DATA_DIR)
     history_scale_by_code = {
         item.code: price_unit_factor(item.close, raw_history.get(item.code, [])[-1].close if raw_history.get(item.code) else 0.0)
-        for item in snapshots
+        for item in search_snapshots
     }
     history = normalize_history_to_snapshots(snapshots, raw_history)
     signal_payload = load_global_signals()
@@ -258,6 +340,7 @@ def analyze_payload(use_public_fallback: bool = False) -> dict[str, object]:
     return {
         "count": len(results),
         "marketCsv": str(market_csv.name),
+        "searchMarketCsv": search_market_csv,
         "investorCsv": ", ".join(path.name for path in investor_paths),
         "quoteSource": quote_meta.get("quoteSource", "로컬 CSV"),
         "quoteUpdatedAt": quote_meta.get("quoteUpdatedAt", ""),
@@ -290,11 +373,37 @@ def analyze_payload(use_public_fallback: bool = False) -> dict[str, object]:
             if sector != "기타"
         ][:8],
         "items": [score_item_payload(item, idx, snapshots_by_code, history, history_scale_by_code) for idx, item in enumerate(results, 1)],
-        "searchItems": [
-            score_item_payload(item, idx, snapshots_by_code, history, history_scale_by_code)
-            for idx, item in enumerate(all_results, 1)
-        ],
+        "searchItems": [search_item_payload(item, idx) for idx, item in enumerate(search_snapshots, 1)],
     }
+
+
+def analyze_single_stock(code: str, use_public_fallback: bool = True) -> dict[str, object]:
+    target_code = str(code or "").strip().zfill(6)
+    if not target_code.strip("0"):
+        raise ValueError("종목코드가 올바르지 않습니다.")
+    market_csv = discover_market_csv(DATA_DIR)
+    investor_paths = discover_investor_csvs(DATA_DIR)
+    snapshots = load_market_snapshots(market_csv)
+    snapshots = merge_krx_investor_csvs(snapshots, investor_paths) if investor_paths else snapshots
+    if use_public_fallback and get_kis_config() is None:
+        try:
+            public_payload = _load_public_mobile_payload()
+            public_date = _parse_payload_date(public_payload)
+            local_date = max((item.trade_date for item in snapshots), default=date.min)
+            if public_date >= local_date:
+                snapshots, _ = _apply_public_quote_overrides(snapshots, public_payload)
+        except Exception:
+            pass
+    search_snapshots, _ = merged_search_snapshots(snapshots, DATA_DIR)
+    snapshot = next((item for item in search_snapshots if item.code == target_code), None)
+    if snapshot is None:
+        raise ValueError("검색한 종목을 찾을 수 없습니다.")
+    raw_history = load_history_dir(DATA_DIR / "history")
+    scale = price_unit_factor(snapshot.close, raw_history.get(snapshot.code, [])[-1].close if raw_history.get(snapshot.code) else 0.0)
+    history = normalize_history_to_snapshots([snapshot], raw_history)
+    signals = load_global_signals().get("signals", {})
+    result = ForceTracker([snapshot], history, signals).score_all(limit=1)[0]
+    return score_item_payload(result, 1, {snapshot.code: snapshot}, history, {snapshot.code: scale}, include_detail=True)
 
 
 def current_quote_map() -> dict[str, dict[str, object]]:
@@ -1129,6 +1238,31 @@ function renderRows(items) {
     </tr>
   `).join("");
 }
+function mergeDetailedItem(item) {
+  if (!item || !item.code) return item;
+  item.detailReady = true;
+  const mergeInto = list => {
+    const idx = list.findIndex(x => x.code === item.code);
+    if (idx >= 0) list[idx] = {...list[idx], ...item};
+    else list.unshift(item);
+  };
+  mergeInto(rankedItems);
+  mergeInto(searchableItems);
+  mergeInto(currentItems);
+  return item;
+}
+async function fetchDetailedItem(code) {
+  const res = await fetch(`/api/search-stock?q=${encodeURIComponent(code)}`);
+  const data = await res.json();
+  if (!data.ok) throw new Error(data.error || "종목 분석 실패");
+  if (data.payload) {
+    lastPayload = data.payload;
+    rankedItems = data.payload.items || rankedItems;
+    searchableItems = data.payload.searchItems || searchableItems;
+  }
+  if (!data.item) throw new Error("상세 분석 결과가 없습니다.");
+  return mergeDetailedItem(data.item);
+}
 async function runStockSearch(autoOpen = true) {
   const query = document.querySelector("#stockSearch").value.trim();
   if (!query) {
@@ -1138,7 +1272,7 @@ async function runStockSearch(autoOpen = true) {
   }
   let matches = searchableItems.filter(item => stockMatches(item, query));
   const codeLike = /^\\d{5,6}$/.test(query);
-  if (!matches.length && codeLike && autoOpen) {
+  if (codeLike && autoOpen) {
     try {
       const res = await fetch(`/api/search-stock?q=${encodeURIComponent(query)}`);
       const data = await res.json();
@@ -1146,10 +1280,13 @@ async function runStockSearch(autoOpen = true) {
       lastPayload = data.payload;
       rankedItems = lastPayload.items || [];
       searchableItems = lastPayload.searchItems || rankedItems;
+      if (data.item) mergeDetailedItem(data.item);
       matches = searchableItems.filter(item => stockMatches(item, query));
     } catch (err) {
-      document.querySelector("#searchResults").innerHTML = `<div class="search-card"><b>검색 실패</b><span>${esc(err.message)}</span></div>`;
-      return;
+      if (!matches.length) {
+        document.querySelector("#searchResults").innerHTML = `<div class="search-card"><b>검색 실패</b><span>${esc(err.message)}</span></div>`;
+        return;
+      }
     }
   }
   renderRows(matches.slice(0, 40));
@@ -1249,14 +1386,21 @@ function stopLive() {
   document.querySelector("#liveToggle").textContent = "실시간 OFF";
   setLiveStatus("대기");
 }
-function openDetail(code) {
-  const item = currentItems.find(x => x.code === code) || searchableItems.find(x => x.code === code) || rankedItems.find(x => x.code === code);
+async function openDetail(code) {
+  let item = rankedItems.find(x => x.code === code) || currentItems.find(x => x.code === code) || searchableItems.find(x => x.code === code);
   if (!item) return;
+  if (!item.detailReady) {
+    try {
+      item = await fetchDetailedItem(code);
+    } catch (err) {
+      alert(err.message);
+    }
+  }
   currentDetailCode = code;
   const pro = item.pro || {};
   const indicators = pro.indicators || {};
   document.querySelector("#d-title").textContent = `${item.name} (${item.code})`;
-  document.querySelector("#d-sub").textContent = `${item.market} · ${item.tags.join(" · ") || "신호 없음"} · ${pro.bias || "전문가판 대기"}`;
+  document.querySelector("#d-sub").textContent = `${item.market} · ${(item.tags || []).join(" · ") || "신호 없음"} · ${pro.bias || "단일종목 분석"}`;
   document.querySelector("#d-rec").innerHTML = `<span class="rec ${recClass(item.recommendation)}">${item.recommendation}</span>`;
   document.querySelector("#d-action").innerHTML = `<span class="action ${actionClass(item.tradeAction)}">${item.tradeAction || "보류"}</span><br><span class="note">${esc(item.tradeReason || "")}</span>`;
   document.querySelector("#d-price").textContent = price(item.close);
@@ -1460,9 +1604,17 @@ class Handler(BaseHTTPRequestHandler):
                 parsed = urllib.parse.urlparse(self.path)
                 query = urllib.parse.parse_qs(parsed.query)
                 search = str(query.get("q", [""])[0]).strip()
+                quote_error = ""
                 if search.isdigit() and 5 <= len(search) <= 6:
-                    refresh_kis_quotes([search])
-                payload = {"ok": True, "payload": analyze_payload(use_public_fallback=True)}
+                    try:
+                        refresh_kis_quotes([search])
+                    except Exception as error:
+                        quote_error = str(error)
+                data = analyze_payload(use_public_fallback=True)
+                item = analyze_single_stock(search, use_public_fallback=True) if search.isdigit() and 5 <= len(search) <= 6 else None
+                if quote_error:
+                    data["quoteError"] = quote_error
+                payload = {"ok": True, "payload": data, "item": item}
             except Exception as error:
                 payload = {"ok": False, "error": str(error)}
             self._send_json(payload)

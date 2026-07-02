@@ -19,6 +19,7 @@ def build_mobile_payload() -> dict[str, object]:
         "generatedAt": datetime.now(ZoneInfo("Asia/Seoul")).isoformat(timespec="seconds"),
         "count": payload.get("count", 0),
         "marketCsv": payload.get("marketCsv", ""),
+        "searchMarketCsv": payload.get("searchMarketCsv", ""),
         "signals": payload.get("signals", {}),
         "bottomCandidates": payload.get("bottomCandidates", []),
         "sectors": payload.get("sectors", []),
@@ -30,7 +31,7 @@ def build_mobile_payload() -> dict[str, object]:
 def main() -> int:
     DOCS_DIR.mkdir(parents=True, exist_ok=True)
     data = build_mobile_payload()
-    (DOCS_DIR / "data.json").write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    (DOCS_DIR / "data.json").write_text(json.dumps(data, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
     print(f"mobile data saved: {DOCS_DIR / 'data.json'}")
     return 0
 

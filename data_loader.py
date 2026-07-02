@@ -31,6 +31,19 @@ def discover_market_csv(data_dir: Path) -> Path:
     return candidates[0]
 
 
+def discover_search_universe_csv(data_dir: Path) -> Path | None:
+    candidates = [
+        path
+        for pattern in ("data_*.csv", "krx_market_*.csv")
+        for path in data_dir.glob(pattern)
+        if path.is_file()
+    ]
+    if not candidates:
+        return None
+    candidates = sorted(set(candidates), key=lambda path: (path.stat().st_mtime, path.name), reverse=True)
+    return candidates[0]
+
+
 def discover_investor_csv(data_dir: Path) -> Path | None:
     krx_dir = data_dir / "krx"
     preferred = krx_dir / "investor_net_buy.csv"

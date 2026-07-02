@@ -332,18 +332,27 @@ function openStock(code) {
   article.classList.add("open");
   article.scrollIntoView({ behavior: "smooth", block: "start" });
 }
-function renderSearch(query) {
+function selectSearchStock(code) {
+  renderSearch(document.querySelector("#stockSearch").value, code);
+  setTimeout(() => openStock(code), 0);
+}
+function renderSearch(query, selectedCode = "") {
   const source = lastPayload?.searchItems || lastPayload?.items || [];
   const matches = query ? source.filter(item => stockMatches(item, query)) : [];
   document.querySelector("#searchResults").innerHTML = query
     ? (matches.length ? matches.slice(0, 8).map(item => `
-      <div class="search-card" onclick="openStock('${item.code}')">
+      <div class="search-card" onclick="selectSearchStock('${item.code}')">
         <b>${esc(item.name)} (${esc(item.code)})</b>
-        <span>${price(item.close)} · ${pct(item.changeRate)} · ${esc(item.tradeAction || "보류")} · ${Number(item.discoveryScore || 0).toFixed(1)}점</span>
+        <span>${price(item.close)} · ${pct(item.changeRate)} · ${esc(item.tradeAction || "보류")} · 선택하면 이 종목만 표시</span>
       </div>
     `).join("") : `<div class="search-card"><b>검색 결과 없음</b><span>데이터 분석 실행 후 다시 검색하세요.</span></div>`)
     : "";
-  renderStocks(query ? matches.slice(0, 40) : (lastPayload?.items || []), new Set((lastPayload?.bottomCandidates || []).map(item => item.code)));
+  if (selectedCode) {
+    const selected = matches.find(item => item.code === selectedCode) || source.find(item => item.code === selectedCode);
+    renderStocks(selected ? [selected] : [], new Set((lastPayload?.bottomCandidates || []).map(item => item.code)));
+  } else if (!query) {
+    renderStocks(lastPayload?.items || [], new Set((lastPayload?.bottomCandidates || []).map(item => item.code)));
+  }
   renderPaper();
 }
 function chart(points, item = {}) {

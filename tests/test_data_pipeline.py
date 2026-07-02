@@ -5,7 +5,7 @@ import unittest
 from datetime import date
 from pathlib import Path
 
-from data_loader import discover_market_csv
+from data_loader import discover_market_csv, discover_search_universe_csv
 from kis_supply import aggregate_supply_rows
 
 
@@ -34,6 +34,14 @@ class DataPipelineTest(unittest.TestCase):
             (data_dir / "kis_market.csv").write_text("code,name\n005930,삼성전자\n", encoding="utf-8")
 
             self.assertEqual(discover_market_csv(data_dir).name, "kis_market.csv")
+
+    def test_discover_search_universe_uses_full_market_file(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            data_dir = Path(temp)
+            (data_dir / "kis_market.csv").write_text("code,name\n005930,삼성전자\n", encoding="utf-8")
+            (data_dir / "data_2203_20260619.csv").write_text("code,name\n000660,SK하이닉스\n", encoding="utf-8")
+
+            self.assertEqual(discover_search_universe_csv(data_dir).name, "data_2203_20260619.csv")
 
 
 if __name__ == "__main__":
